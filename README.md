@@ -1,19 +1,35 @@
-# F1TENTH Onboard
+# F1TENTH 온보드
 
-F1TENTH 실차의 Bringup, Map 기반 AMCL, 전역경로, Linear MPC와 정적 장애물 회피를 실행하는 ROS 2 Humble 환경입니다.
+ROS 2 Humble 기반 실차 자율주행 저장소입니다. 시뮬레이션 저장소 [Kimz1xq/f1tenth](https://github.com/Kimz1xq/f1tenth)의 `planning`, `control`, `f1tenth_bringup`과 동일한 알고리즘 코드를 사용합니다.
 
-노트북 시뮬레이션 코드는 [Kimz1xq/f1tenth](https://github.com/Kimz1xq/f1tenth)에서 관리합니다.
+## 현재 구성
 
-## 1. 접속
+- 위치 추정: Nav2 Map Server + AMCL
+- 전역 경로: `track03_raceline.csv`
+- 기본 제어기: HMCL-UNIST UNICORN L1 Humble adapter
+- 비교 제어기: Linear MPC, Pure Pursuit
+- 장애물 대응: LiDAR local planner + AEB, 자동 전환
+- 차량 출력: `/auto` → Ackermann mux → VESC
 
-현재 LAN 주소 기준:
+`unicorn_l1`은 MPC가 아닙니다. 속도·곡률 기반 L1/Pure-Pursuit 계열 제어기이며, `mpc`가 kinematic bicycle model 기반 Linear MPC입니다.
 
-```bash
-ssh jeonbotdae@192.168.1.7
-docker exec -it f1tenth bash
+## 네트워크와 접속
+
+현재 공유기 환경:
+
+```text
+노트북: 192.168.1.6
+온보드: 192.168.1.7
 ```
 
-컨테이너의 모든 새 터미널에서 먼저 실행합니다.
+새 터미널마다 노트북에서 다음을 실행합니다. 비밀번호는 프롬프트에서 입력합니다.
+
+```bash
+ssh -tt jeonbotdae@192.168.1.7 \
+  'docker start f1tenth >/dev/null 2>&1 || true; docker exec -it f1tenth bash'
+```
+
+컨테이너에 들어온 뒤 매번 source 합니다.
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -21,122 +37,120 @@ source /home/misys/f1tenth_ws/install/setup.bash
 source /home/misys/shared_dir/autonomy_ws/install/setup.bash
 ```
 
-IP는 네트워크가 바뀌면 달라질 수 있습니다.
+Docker를 `restart`하면 현재 SSH의 `docker exec`가 종료될 수 있으므로 평상시에는 위의 `start` 명령을 사용합니다.
 
-## 2. 최초 빌드
+## 터미널별 실행 순서
 
-현재 차량에는 `/home/misys/shared_dir/autonomy_ws`로 설치되어 있습니다.
+각 터미널에서 위 SSH 접속과 source를 먼저 수행합니다.
 
-```bash
-cd /home/misys/shared_dir/autonomy_ws
-
-colcon build --symlink-install --packages-select \
-  planning control f1tenth_bringup
-
-source install/setup.bash
-```
-
-코드를 수정하지 않았다면 매번 빌드하지 않습니다.
-
-새 온보드 PC에 복구할 때만 host의 `shared_dir` 아래에 clone하고, 저장된 파일을 현재 실행 경로로 배치합니다.
-
-```bash
-cd /home/jeonbotdae/shared_dir
-git clone https://github.com/Kimz1xq/f1tenth-onboard.git
-
-mkdir -p autonomy_ws/src config maps
-cp -a f1tenth-onboard/autonomy_ws/src/. autonomy_ws/src/
-cp f1tenth-onboard/config/amcl.yaml config/
-cp f1tenth-onboard/maps/track03.* maps/
-```
-
-그다음 컨테이너에서 차량 패키지 수정본을 반영하고 한 번 빌드합니다.
-
-```bash
-cp -a /home/misys/shared_dir/f1tenth-onboard/vehicle_overrides/f1tenth_stack/. \
-  /home/misys/f1tenth_ws/src/f1tenth_system/f1tenth_stack/
-cp -a /home/misys/shared_dir/f1tenth-onboard/vehicle_overrides/vesc_ackermann/. \
-  /home/misys/f1tenth_ws/src/vesc/vesc_ackermann/
-cp -a /home/misys/shared_dir/f1tenth-onboard/vehicle_overrides/joy_teleop/. \
-  /home/misys/f1tenth_ws/src/teleop_tools/joy_teleop/
-cp -a /home/misys/shared_dir/f1tenth-onboard/vehicle_overrides/slam_toolbox/. \
-  /home/misys/f1tenth_ws/src/slam_toolbox/
-
-cd /home/misys/f1tenth_ws
-colcon build --symlink-install --packages-select \
-  f1tenth_stack vesc_ackermann joy_teleop slam_toolbox
-
-cd /home/misys/shared_dir/autonomy_ws
-colcon build --symlink-install --packages-select \
-  planning control f1tenth_bringup
-```
-
-## 3. 실차 실행 순서
-
-아래 네 프로세스는 서로 다른 터미널에서 실행합니다.
-
-### 터미널 1: 차량 Bringup
+### 터미널 1 — 차량 Bringup
 
 ```bash
 ros2 launch f1tenth_stack bringup_launch.py
 ```
 
-이 명령은 조이스틱, LiDAR, VESC, odometry와 `base_link -> laser` TF를 실행합니다. **한 번만 실행합니다.**
+LiDAR, VESC, joystick, odometry와 `odom -> base_link -> laser` TF를 실행합니다. 한 번만 실행합니다.
 
-### 터미널 2: Map Server
+### 터미널 2 — Map Server
 
 ```bash
 ros2 run nav2_map_server map_server --ros-args \
+  -r __node:=map_server \
   -p yaml_filename:=/home/misys/shared_dir/maps/track03.yaml \
   -p topic:=map \
   -p frame_id:=map \
   -p use_sim_time:=false
 ```
 
-### 터미널 3: AMCL
+`Creating`에서 기다리는 것은 정상입니다.
+
+### 터미널 3 — AMCL
 
 ```bash
 ros2 run nav2_amcl amcl --ros-args \
-  --params-file /home/misys/shared_dir/config/amcl.yaml \
-  -p base_frame_id:=base_link \
-  -p set_initial_pose:=false \
-  -p use_sim_time:=false
+  -r __node:=amcl \
+  --params-file /home/misys/shared_dir/config/amcl.yaml
 ```
 
-### 터미널 4: Map Server와 AMCL 활성화
+### 터미널 4 — Lifecycle 활성화
+
+터미널 2와 3이 모두 실행된 뒤 시작합니다.
 
 ```bash
-ros2 lifecycle set /map_server configure
-ros2 lifecycle set /map_server activate
-ros2 lifecycle set /amcl configure
-ros2 lifecycle set /amcl activate
+ros2 run nav2_lifecycle_manager lifecycle_manager --ros-args \
+  -r __node:=lifecycle_manager_localization \
+  -p autostart:=true \
+  -p bond_timeout:=0.0 \
+  -p node_names:="['map_server', 'amcl']"
 ```
 
-## 4. RViz와 초기 자세
-
-RViz는 GPU가 있는 노트북 Docker 컨테이너에서 실행합니다.
+확인:
 
 ```bash
-cd ~/Downloads/f1tenth_gym_ros_humble
-docker compose exec sim bash
-
-source /opt/ros/humble/setup.bash
-source /sim_ws/install/setup.bash
-
-rviz2 -d /sim_ws/install/f1tenth_gym_ros/share/f1tenth_gym_ros/launch/gym_bridge.rviz
+ros2 lifecycle get /map_server
+ros2 lifecycle get /amcl
 ```
 
-RViz에서:
+둘 다 `active [3]`이어야 합니다.
 
-1. `Fixed Frame`을 `map`으로 설정합니다.
-2. `2D Pose Estimate`를 실제 차량 위치에 찍습니다.
-3. 화살표 방향을 실제 차량의 앞 방향과 정확히 맞춥니다.
-4. Map과 LaserScan이 겹치는지 확인합니다.
+### 터미널 5 — 자율주행 제어기
 
-온보드에서 TF를 확인합니다.
+기본 UNICORN L1:
 
 ```bash
+ros2 launch f1tenth_bringup autonomy.launch.py \
+  mode:=real controller:=unicorn_l1 speed:=1.0
+```
+
+동적 회피 속도 제한 UNICORN L1:
+
+```bash
+ros2 launch f1tenth_bringup autonomy.launch.py \
+  mode:=real controller:=unicorn_l1_dynamic speed:=1.0
+```
+
+Linear MPC 비교:
+
+```bash
+ros2 launch f1tenth_bringup autonomy.launch.py \
+  mode:=real controller:=mpc speed:=1.0
+```
+
+`speed`는 직선 최대속도입니다. 코너에서는 곡률 제한으로 감속합니다. 실차 launch는 장애물 플래너를 항상 실행하며 장애물 유무에 따라 전역/회피 경로를 자동 전환합니다.
+
+### 터미널 6 — RViz
+
+```bash
+rviz2 -d /home/misys/f1tenth_ws/install/f1tenth_gym_ros/share/f1tenth_gym_ros/launch/gym_bridge.rviz
+```
+
+`Fixed Frame`을 `map`으로 설정하고 `2D Pose Estimate`로 실제 초기 자세를 지정합니다. Map과 LaserScan이 겹치고 차량 방향이 실제와 같아야 합니다.
+
+### 터미널 7 — 주행 시작/정지
+
+시작:
+
+```bash
+ros2 service call /control/enable std_srvs/srv/SetBool "{data: true}"
+```
+
+정지:
+
+```bash
+ros2 service call /control/enable std_srvs/srv/SetBool "{data: false}"
+```
+
+## 주행 전 필수 확인
+
+```bash
+timeout 5 ros2 topic hz /joy
+timeout 5 ros2 topic hz /scan
+timeout 5 ros2 topic hz /odom
+timeout 5 ros2 topic hz /planning/path
 ros2 run tf2_ros tf2_echo map base_link
+ros2 topic echo /planning/local_status
+ros2 topic echo /planning/avoidance_active
+ros2 topic echo /safety/emergency_stop
 ```
 
 정상 TF:
@@ -145,97 +159,57 @@ ros2 run tf2_ros tf2_echo map base_link
 map -> odom -> base_link -> laser
 ```
 
-차량 위치나 방향이 경로와 맞지 않으면 MPC를 켜지 않습니다.
+`AEB_STOP`, `NO_COLLISION_FREE_PATH`, TF/scan timeout에서는 원인을 해결한 뒤 시작합니다. safety 조건을 우회하지 않습니다.
 
-## 5. 전역경로와 MPC 실행
+## 사용 중인 모델
 
-새 터미널에서 원하는 속도로 실행합니다.
+- `AMCL`: Nav2 particle-filter 기반 2D map localization
+- 전역 경로: 지도 free-space에서 생성한 폐곡선 raceline CSV
+- `unicorn_l1`: [HMCL-UNIST UNICORN Racing Stack](https://github.com/HMCL-UNIST/unicorn-racing-stack)의 L1 전략을 `nav_msgs/Path`, TF, Ackermann 인터페이스에 맞춘 ROS 2 Humble adapter
+- `unicorn_l1_dynamic`: 같은 제어기에 로컬 플래너의 `/planning/speed_limit`을 적용
+- `mpc`: kinematic bicycle model을 선형화한 저장소 내 Linear MPC 비교 구현
+- 장애물 회피: LiDAR cluster 추적, map clearance 검사, offset 후보 경로 선택, 별도 AEB
 
-```bash
-ros2 launch f1tenth_bringup autonomy.launch.py \
-  mode:=real \
-  controller:=mpc \
-  mpc_profile:=speed_1.0 \
-  min_command_speed:=0.30 \
-  obstacles:=false
-```
+## Sim-to-real 규칙
 
-속도는 파일을 만들지 않고 숫자만 바꿉니다.
+다음 세 패키지는 시뮬레이션과 실차에서 동일하게 유지합니다.
 
 ```text
-mpc_profile:=speed_0.5
-mpc_profile:=speed_1.0
-mpc_profile:=speed_1.4
+autonomy_ws/src/planning
+autonomy_ws/src/control
+autonomy_ws/src/f1tenth_bringup
 ```
 
-처음에는 `speed_0.5`로 검증한 뒤 단계적으로 올립니다. Autonomy를 재실행할 때는 이 launch만 `Ctrl+C`로 종료합니다. 차량 Bringup을 다시 실행하지 않습니다.
+환경 차이는 launch 인자로만 흡수합니다.
 
-## 6. 주행 시작과 정지
+| 항목 | 시뮬레이션 | 실차 |
+|---|---|---|
+| base frame | `ego_racecar/base_link` | `base_link` |
+| odom | `/ego_racecar/odom` | `/odom` |
+| drive | `/drive` | `/auto` |
+| 초기 자세 | 자동 | RViz 수동 지정 |
 
-Autonomy launch는 MPC가 꺼진 상태로 시작합니다. RViz 정합을 확인한 다음 실행합니다.
+실차 적용 전에는 동일한 지도·raceline·목표속도로 시뮬레이션에서 먼저 검증하고, 실차에서는 저속부터 올리며 CTE, lap time, 충돌, safety stop, 조향 saturation을 기록합니다.
+
+## 변경 후 빌드
 
 ```bash
-# 주행 시작
-ros2 service call /control/enable std_srvs/srv/SetBool "{data: true}"
-
-# 즉시 정지
-ros2 service call /control/enable std_srvs/srv/SetBool "{data: false}"
+cd /home/misys/shared_dir/autonomy_ws
+colcon build --symlink-install --packages-select planning control f1tenth_bringup
+colcon test --packages-select planning control f1tenth_bringup
+source install/setup.bash
 ```
 
-시작이 거부되면 다음을 확인합니다.
+저장소에는 소스와 설정만 보관하고 `build`, `install`, `log`, rosbag과 결과 CSV는 커밋하지 않습니다.
 
-```bash
-ros2 param get /linear_mpc_node enabled
-ros2 topic echo /mpc/proposed_drive --once
-ros2 run tf2_ros tf2_echo map base_link
-```
-
-## 7. 장애물 회피
-
-장애물 없는 기본 주행이 정상일 때만 다음처럼 켭니다.
-
-```bash
-ros2 launch f1tenth_bringup autonomy.launch.py \
-  mode:=real \
-  controller:=mpc \
-  mpc_profile:=speed_0.5 \
-  min_command_speed:=0.30 \
-  obstacles:=true
-```
-
-```bash
-ros2 topic echo /planning/local_status
-ros2 topic echo /safety/emergency_stop
-```
-
-상태 의미:
+## 주요 경로
 
 ```text
-GLOBAL_PATH_CLEAR       장애물 없음
-AVOIDING ...            회피 경로 생성됨
-NO_COLLISION_FREE_PATH  안전한 경로 없음
-AEB_STOP                긴급 정지
+/home/misys/f1tenth_ws                          차량 Bringup/VESC workspace
+/home/misys/shared_dir/autonomy_ws              Planning/Control workspace
+/home/misys/shared_dir/maps/track03.yaml         실차 지도
+/home/misys/shared_dir/config/amcl.yaml          실차 AMCL 설정
+autonomy_ws/src/planning                         전역 경로와 LiDAR 회피
+autonomy_ws/src/control                          제어기
+autonomy_ws/src/f1tenth_bringup                  단일 autonomy launch
 ```
-
-장애물은 차량에서 최소 2 m 이상 앞에 놓고 저속부터 검증합니다.
-
-## 8. 반드시 지킬 것
-
-- `f1tenth_stack bringup_launch.py`를 두 번 실행하지 않습니다.
-- 중복 Bringup은 `/odom`과 TF를 중복 발행해 AMCL을 발산시킵니다.
-- `2D Pose Estimate`의 화살표 방향을 차량 앞 방향과 맞춥니다.
-- MPC가 벽으로 향하면 즉시 `/control/enable`을 `false`로 호출합니다.
-- 속도 변경 시 Autonomy launch만 재실행합니다.
-
-## 저장소 구성
-
-```text
-autonomy_ws/src/control          Linear MPC, Pure Pursuit, 검증 도구
-autonomy_ws/src/planning         전역경로와 정적 장애물 회피
-autonomy_ws/src/f1tenth_bringup  단일 Autonomy launch
-config/amcl.yaml                 실차 AMCL 설정
-maps/track03.*                   실차 지도
-vehicle_overrides/               VESC, odometry, joystick, SLAM 변경본
-```
-
-`build`, `install`, `log`, rosbag과 외부 vendor 전체 소스는 저장소에서 제외합니다.
