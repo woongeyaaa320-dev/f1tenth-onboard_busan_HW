@@ -20,12 +20,13 @@ ROS 2 Humble 기반 실차 자율주행 저장소입니다. 시뮬레이션 저�
 ```text
 노트북: 192.168.1.6
 온보드: 192.168.1.7
+Hotspot : 172.20.10.10
 ```
 
 새 터미널마다 노트북에서 다음을 실행합니다. 비밀번호는 프롬프트에서 입력합니다.
 
 ```bash
-ssh -tt jeonbotdae@192.168.1.7 \
+ssh -tt jeonbotdae@172.20.10.10 \
   'docker start f1tenth >/dev/null 2>&1 || true; docker exec -it f1tenth bash'
 ```
 
