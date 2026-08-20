@@ -10,7 +10,10 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-def _parse_dynamic_speed(profile_name, maximum_speed=20.0):
+SOFTWARE_SPEED_CEILING = 20.0
+
+
+def _parse_dynamic_speed(profile_name, maximum_speed=SOFTWARE_SPEED_CEILING):
     """Return m/s encoded by speed_<value>, or None for a named profile."""
     if not profile_name.startswith('speed_'):
         return None
@@ -50,9 +53,11 @@ def _launch_setup(context):
     maximum_speed = float(
         LaunchConfiguration('maximum_speed').perform(context))
     if (not math.isfinite(maximum_speed)
-            or not 0.0 < maximum_speed <= 20.0):
+            or maximum_speed <= 0.0
+            or maximum_speed > SOFTWARE_SPEED_CEILING):
         raise RuntimeError(
-            'maximum_speed must be greater than 0 and at most 20.0 m/s')
+            'maximum_speed must be greater than 0 and at most '
+            f'{SOFTWARE_SPEED_CEILING:g} m/s; got {maximum_speed!r}.')
     if controller == 'none':
         return [LogInfo(msg='Controller disabled (controller:=none)')]
 
@@ -78,46 +83,6 @@ def _launch_setup(context):
                         'target_speed': requested_speed,
                         'max_speed': requested_speed,
                         'min_speed': min(0.25, requested_speed),
-                    },
-                ],
-            ),
-        ]
-
-    if controller == 'kyeongho_pp':
-        profile_name = LaunchConfiguration('mpc_profile').perform(context)
-        requested_speed = _parse_dynamic_speed(profile_name, maximum_speed)
-        if requested_speed is None:
-            raise RuntimeError(
-                'Kyeongho PP requires mpc_profile:=speed_<m/s> '
-                '(for example speed_1.0).')
-        return [
-            LogInfo(msg=(
-                'Controller=kyeongho_pp (adapted Pure Pursuit) '
-                f'speed={requested_speed:.2f}m/s')),
-            Node(
-                package='control',
-                executable='kyeongho_pp_node',
-                name='kyeongho_pp_node',
-                output='screen',
-                parameters=[
-                    LaunchConfiguration('params_file').perform(context),
-                    {
-                        'drive_mode': drive_mode,
-                        'global_frame_id': LaunchConfiguration(
-                            'global_frame_id').perform(context),
-                        'base_frame_id': LaunchConfiguration(
-                            'base_frame_id').perform(context),
-                        'odom_topic': LaunchConfiguration(
-                            'odom_topic').perform(context),
-                        'drive_topic': LaunchConfiguration(
-                            'drive_topic').perform(context),
-                        'emergency_stop_topic': LaunchConfiguration(
-                            'emergency_stop_topic').perform(context),
-                        'target_speed': requested_speed,
-                        'max_speed': requested_speed,
-                        'min_speed': min(0.25, requested_speed),
-                        'min_command_speed': float(LaunchConfiguration(
-                            'min_command_speed').perform(context)),
                     },
                 ],
             ),
@@ -224,6 +189,10 @@ def _launch_setup(context):
                     'max_longitudinal_deceleration': float(
                         LaunchConfiguration(
                             'max_longitudinal_deceleration').perform(context)),
+                    'max_steering_rate': float(LaunchConfiguration(
+                        'max_steering_rate').perform(context)),
+                    'transform_fault_grace': float(LaunchConfiguration(
+                        'transform_fault_grace').perform(context)),
                     'avoidance_speed_limit': avoidance_speed_limit,
                     'use_dynamic_speed_limit': True,
                     'steering_lookup_table': table_path,
@@ -285,6 +254,10 @@ def _launch_setup(context):
                 'max_longitudinal_acceleration').perform(context)),
             'max_longitudinal_deceleration': float(LaunchConfiguration(
                 'max_longitudinal_deceleration').perform(context)),
+            'max_steering_rate': float(LaunchConfiguration(
+                'max_steering_rate').perform(context)),
+            'transform_fault_grace': float(LaunchConfiguration(
+                'transform_fault_grace').perform(context)),
             'avoidance_speed_limit': avoidance_speed_limit,
             'use_dynamic_speed_limit': use_dynamic_speed_limit,
             'min_reference_speed': min_reference_speed,
@@ -307,7 +280,7 @@ def _launch_setup(context):
     if controller not in ('mpc', 'mpcc'):
         raise RuntimeError(
             f'Unknown controller {controller!r}; use none, pure_pursuit, '
-            'kyeongho_pp, unicorn_l1, forza_map, mpc, or mpcc.')
+            'unicorn_l1, forza_map, mpc, or mpcc.')
 
     config_path = LaunchConfiguration('mpc_params_file').perform(context)
     profile_name = LaunchConfiguration('mpc_profile').perform(context)
@@ -385,21 +358,21 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument('drive_mode', default_value='sim'),
         DeclareLaunchArgument(
+            'maximum_speed',
+            default_value=str(SOFTWARE_SPEED_CEILING),
+            description=(
+                'Software command ceiling in m/s. The selected speed remains '
+                'a separate target and may be reduced by dynamics or safety.')),
+        DeclareLaunchArgument(
             'controller',
             default_value='pure_pursuit',
             description=(
-                'none, pure_pursuit, kyeongho_pp, unicorn_l1, forza_map, '
-                'mpc, or mpcc'),
+                'none, pure_pursuit, unicorn_l1, forza_map, mpc, or mpcc'),
         ),
         DeclareLaunchArgument(
             'mpc_profile',
             default_value='speed_0.55',
             description='speed_<m/s> or a named profile in mpc_params.yaml',
-        ),
-        DeclareLaunchArgument(
-            'maximum_speed',
-            default_value='20.0',
-            description='Explicit controller command ceiling in m/s',
         ),
         DeclareLaunchArgument(
             'mpc_params_file',
@@ -437,6 +410,16 @@ def generate_launch_description():
             'max_longitudinal_deceleration',
             default_value='4.0',
             description='UNICORN L1 deceleration command limit in m/s^2'),
+        DeclareLaunchArgument(
+            'max_steering_rate',
+            default_value='6.0',
+            description='Maximum commanded steering slew in rad/s'),
+        DeclareLaunchArgument(
+            'transform_fault_grace',
+            default_value='0.10',
+            description=(
+                'Seconds to hold the last safe command for transient TF '
+                'lookup failures; safety inputs still stop immediately')),
         DeclareLaunchArgument(
             'avoidance_speed_limit',
             default_value='auto',

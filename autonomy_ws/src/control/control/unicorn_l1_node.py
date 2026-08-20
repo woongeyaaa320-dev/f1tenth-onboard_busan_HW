@@ -113,6 +113,12 @@ class UnicornL1Node(Node):
         self.declare_parameter('avoidance_speed_limit', 1.50)
         self.declare_parameter('max_steering_angle', 0.4189)
         self.declare_parameter('max_steering_delta', 0.40)
+        # Physical steering slew limit. The legacy per-cycle delta is kept as
+        # an upper compatibility bound, but no longer depends on loop rate.
+        self.declare_parameter('max_steering_rate', 6.0)
+        # Only transient TF lookup failures may hold the last safe command.
+        # Collision, AEB and invalid-path conditions still stop immediately.
+        self.declare_parameter('transform_fault_grace', 0.10)
 
         # UNICORN controller.yaml defaults. Distance-window curvature sampling
         # replaces its waypoint-index window so behavior is path-resolution
@@ -160,7 +166,9 @@ class UnicornL1Node(Node):
                 'max_longitudinal_acceleration',
                 'max_longitudinal_deceleration', 'avoidance_speed_limit',
                 'max_steering_angle',
-                'max_steering_delta', 't_clip_min', 't_clip_max', 'm_l1',
+                'max_steering_delta', 'max_steering_rate',
+                'transform_fault_grace',
+                't_clip_min', 't_clip_max', 'm_l1',
                 'q_l1', 'curvature_factor', 'future_constant',
                 'curvature_window_start', 'curvature_window_end',
                 'speed_lookahead',
@@ -193,6 +201,10 @@ class UnicornL1Node(Node):
                 'longitudinal acceleration limits must be positive')
         if self.avoidance_speed_limit <= 0.0:
             raise RuntimeError('avoidance_speed_limit must be positive')
+        if self.max_steering_rate <= 0.0:
+            raise RuntimeError('max_steering_rate must be positive')
+        if self.transform_fault_grace < 0.0:
+            raise RuntimeError('transform_fault_grace must be non-negative')
         self.current_odom = None
         self.last_odom_time = None
         self.last_path_time = None
@@ -218,6 +230,7 @@ class UnicornL1Node(Node):
         self.last_solution_ok = False
         self.last_status_message = None
         self.last_status_time = None
+        self.transform_fault_since = None
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=5.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -628,16 +641,23 @@ class UnicornL1Node(Node):
 
         # Match UNICORN's lateral-error steering scaling and steering slew cap.
         steering *= math.exp(math.log(2.0) * abs(future_lateral_error))
-        steering = self.clamp(
-            steering,
-            self.previous_steering - self.max_steering_delta,
-            self.previous_steering + self.max_steering_delta)
-        steering = self.clamp(
-            steering, -self.max_steering_angle, self.max_steering_angle)
+        steering = self.limit_steering(steering)
 
         return command_speed, steering, (
             future_x, future_y, target_x, target_y, l1_distance,
             mean_curvature, distance)
+
+    def limit_steering(self, steering):
+        """Apply frequency-independent steering slew and angle limits."""
+        maximum_step = min(
+            self.max_steering_delta,
+            self.max_steering_rate * self.control_dt)
+        steering = self.clamp(
+            steering,
+            self.previous_steering - maximum_step,
+            self.previous_steering + maximum_step)
+        return self.clamp(
+            steering, -self.max_steering_angle, self.max_steering_angle)
 
     def publish_ackermann(self, publisher, speed, steering):
         if not rclpy.ok():
@@ -771,6 +791,7 @@ class UnicornL1Node(Node):
                 0.0, float(self.current_odom.twist.twist.linear.x))
             command_speed, steering, geometry = self.compute_command(
                 x, y, yaw, speed)
+            self.transform_fault_since = None
             self.publish_markers(geometry)
             self.last_solution_ok = True
             if not self.enabled:
@@ -790,7 +811,30 @@ class UnicornL1Node(Node):
             self.previous_steering = steering
             self.publish_ackermann(
                 self.drive_pub, command_speed, steering)
-        except (TransformException, RuntimeError, ValueError) as error:
+        except TransformException as error:
+            now = self.get_clock().now()
+            if self.transform_fault_since is None:
+                self.transform_fault_since = now
+            fault_age = (
+                now - self.transform_fault_since).nanoseconds * 1e-9
+            if (self.enabled
+                    and self.last_solution_ok
+                    and fault_age <= self.transform_fault_grace):
+                self.publish_ackermann(
+                    self.drive_pub,
+                    self.previous_command_speed,
+                    self.previous_steering)
+                self.warn_throttled(
+                    self.controller_label
+                    + ' holding last command during transient TF fault: '
+                    + str(error))
+                return
+            self.last_solution_ok = False
+            self.previous_command_speed = 0.0
+            self.publish_stop()
+            self.warn_throttled(
+                self.controller_label + ' safety stop: ' + str(error))
+        except (RuntimeError, ValueError) as error:
             self.last_solution_ok = False
             self.previous_command_speed = 0.0
             self.publish_stop()

@@ -28,13 +28,20 @@ local_obstacle_planner_node:
     scan_transform_delay: 0.08
 
     detection_range: 6.0
-    map_endpoint_clearance: 0.30
+    # Ignore small map/scan registration residuals near mapped walls.
+    map_endpoint_clearance: 0.36
+    # Adapt wall rejection to the current scan/map registration residual.
+    # This is bounded and coordinate-free: it compensates localization error
+    # without disabling detection of objects well inside the track.
+    map_registration_percentile: 60.0
+    map_registration_margin: 0.08
+    map_registration_max_extra: 0.25
     cluster_gap: 0.16
-    cluster_min_points: 8
+    cluster_min_points: 10
     cluster_max_diameter: 0.55
     path_obstacle_corridor: 0.55
-    obstacle_memory_seconds: 0.8
-    obstacle_confirmation_frames: 2
+    obstacle_memory_seconds: 0.5
+    obstacle_confirmation_frames: 3
     obstacle_match_distance: 0.35
     # 0.20 x 0.12 m obstacle footprint의 외접원에 가까운 기본 반경.
     obstacle_default_radius: 0.11
@@ -54,7 +61,7 @@ local_obstacle_planner_node:
     maximum_candidate_offset: 0.70
     # Small allowance for scan-surface centroid and real tracking error. This
     # affects path clearance, not the visualized obstacle size or AEB range.
-    candidate_clearance_buffer: 0.05
+    candidate_clearance_buffer: 0.03
     avoidance_before_distance: 1.80
     avoidance_after_distance: 1.10
     maximum_avoidance_before_distance: 4.0
@@ -63,25 +70,25 @@ local_obstacle_planner_node:
     avoidance_after_time: 0.40
     path_sample_spacing: 0.04
     # 0.17 m vehicle lateral radius + 0.02 m wall margin.
-    map_clearance: 0.19
+    map_clearance: 0.18
     vehicle_clearance_radius: 0.17
-    obstacle_safety_margin: 0.02
+    obstacle_safety_margin: 0.01
 
-    # Conservative real-vehicle AEB baseline. Keep these independent from the
-    # RViz marker size and tune only from measured braking data.
-    aeb_corridor_half_width: 0.19
-    aeb_reaction_time: 0.12
-    aeb_max_deceleration: 4.0
-    aeb_min_distance: 0.16
-    aeb_critical_reaction_time: 0.05
-    aeb_confirmation_frames: 2
+    # Performance-oriented AEB: confirmed dense clusters only.  Physical
+    # footprint collision and no-feasible-path stops remain unchanged.
+    aeb_corridor_half_width: 0.17
+    aeb_reaction_time: 0.08
+    aeb_max_deceleration: 6.0
+    aeb_min_distance: 0.10
+    aeb_critical_reaction_time: 0.03
+    aeb_confirmation_frames: 3
     scan_timeout: 0.50
 
     # The controller takes this topic as a limit, not as a fixed avoidance
     # speed. Straights remain fast while curvature sets a physically meaningful
     # limit through a_y = v^2*kappa.
     maximum_planning_speed: 5.5
-    minimum_avoidance_speed: 0.60
+    minimum_avoidance_speed: 1.00
     max_lateral_acceleration: 1.50
     candidate_curvature_weight: 0.35
     candidate_clearance_weight: 0.10

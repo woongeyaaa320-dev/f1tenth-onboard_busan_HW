@@ -16,6 +16,9 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
 
+SOFTWARE_SPEED_CEILING = 20.0
+
+
 def _include(package, launch_file, arguments):
     source = PythonLaunchDescriptionSource(os.path.join(
         get_package_share_directory(package), 'launch', launch_file))
@@ -25,7 +28,7 @@ def _include(package, launch_file, arguments):
     )
 
 
-def _speed_from_profile(profile_name, maximum_speed=20.0):
+def _speed_from_profile(profile_name):
     """Return the numeric speed encoded by speed_<m/s>, if present."""
     if not profile_name.startswith('speed_'):
         return None
@@ -40,10 +43,13 @@ def _speed_from_profile(profile_name, maximum_speed=20.0):
             'use speed_1.0 or speed_3.')
     # Validate before any included launch starts. Otherwise a later controller
     # error can leave an already-started simulator bridge behind.
-    if not math.isfinite(speed) or not 0.0 < speed <= maximum_speed:
+    # F1TENTH Gym is configured with v_max=20 m/s.  Keep that simulator
+    # capability available for controlled speed-envelope experiments; the
+    # real-vehicle branch below retains its independent 5.5 m/s guard.
+    if not math.isfinite(speed) or not 0.0 < speed <= 20.0:
         raise RuntimeError(
-            'Controller speed must be greater than 0 and at most '
-            f'{maximum_speed:g} m/s; '
+            'Simulation controller speed must be greater than 0 and at most '
+            '20.0 m/s; '
             f'got {speed!r}.')
     return speed
 
@@ -122,17 +128,19 @@ def _launch_setup(context, catalog_path):
     maximum_speed = float(
         LaunchConfiguration('maximum_speed').perform(context))
     if (not math.isfinite(maximum_speed)
-            or not 0.0 < maximum_speed <= 20.0):
+            or maximum_speed <= 0.0
+            or maximum_speed > SOFTWARE_SPEED_CEILING):
         raise RuntimeError(
-            'maximum_speed must be greater than 0 and at most 20.0 m/s')
+            'maximum_speed must be greater than 0 and at most '
+            f'{SOFTWARE_SPEED_CEILING:g} m/s; got {maximum_speed!r}.')
     if mode == 'real':
         controller = LaunchConfiguration('controller').perform(context)
         requested_speed = float(LaunchConfiguration('speed').perform(context))
         if (not math.isfinite(requested_speed)
                 or not 0.0 < requested_speed <= maximum_speed):
             raise RuntimeError(
-                'speed must be greater than 0 and at most '
-                f'{maximum_speed:g} m/s')
+                'speed must be greater than 0 and at most maximum_speed '
+                f'({maximum_speed:g} m/s); got {requested_speed!r}.')
         speed_profile = 'speed_%g' % requested_speed
         waypoint_csv = LaunchConfiguration('waypoint_csv').perform(context)
         return [
@@ -158,8 +166,8 @@ def _launch_setup(context, catalog_path):
             _include('control', 'control.launch.py', {
                 'controller': controller,
                 'mpc_profile': speed_profile,
-                'maximum_speed': maximum_speed,
                 'drive_mode': 'real',
+                'maximum_speed': maximum_speed,
                 'enabled': 'false',
                 'global_frame_id': 'map',
                 'base_frame_id': 'base_link',
@@ -173,6 +181,10 @@ def _launch_setup(context, catalog_path):
                     'max_longitudinal_acceleration').perform(context),
                 'max_longitudinal_deceleration': LaunchConfiguration(
                     'max_longitudinal_deceleration').perform(context),
+                'max_steering_rate': LaunchConfiguration(
+                    'max_steering_rate').perform(context),
+                'transform_fault_grace': LaunchConfiguration(
+                    'transform_fault_grace').perform(context),
                 'avoidance_speed_limit': LaunchConfiguration(
                     'avoidance_speed_limit').perform(context),
                 'steering_lookup_table': LaunchConfiguration(
@@ -197,8 +209,8 @@ def _launch_setup(context, catalog_path):
     track = tracks[track_name]
     controller = LaunchConfiguration('controller').perform(context)
     mpc_profile = LaunchConfiguration('mpc_profile').perform(context)
-    profile_speed = _speed_from_profile(mpc_profile, maximum_speed)
-    planning_speed = maximum_speed if profile_speed is None else profile_speed
+    profile_speed = _speed_from_profile(mpc_profile)
+    planning_speed = 5.5 if profile_speed is None else profile_speed
     friction_arg = LaunchConfiguration('friction').perform(context)
     friction = track['friction_mu'] if friction_arg == 'auto' else friction_arg
     obstacle_mode = LaunchConfiguration('obstacles').perform(context)
@@ -245,14 +257,18 @@ def _launch_setup(context, catalog_path):
         _include('control', 'control.launch.py', {
             'controller': controller,
             'mpc_profile': mpc_profile,
-            'maximum_speed': maximum_speed,
             'drive_mode': 'sim',
+            'maximum_speed': maximum_speed,
             'max_lateral_acceleration': LaunchConfiguration(
                 'max_lateral_acceleration').perform(context),
             'max_longitudinal_acceleration': LaunchConfiguration(
                 'max_longitudinal_acceleration').perform(context),
             'max_longitudinal_deceleration': LaunchConfiguration(
                 'max_longitudinal_deceleration').perform(context),
+            'max_steering_rate': LaunchConfiguration(
+                'max_steering_rate').perform(context),
+            'transform_fault_grace': LaunchConfiguration(
+                'transform_fault_grace').perform(context),
             'avoidance_speed_limit': LaunchConfiguration(
                 'avoidance_speed_limit').perform(context),
             'steering_lookup_table': LaunchConfiguration(
@@ -281,8 +297,7 @@ def generate_launch_description():
             'controller',
             default_value='unicorn_l1',
             description=(
-                'none, pure_pursuit, kyeongho_pp, unicorn_l1, forza_map, '
-                'mpc, or mpcc'),
+                'none, pure_pursuit, unicorn_l1, forza_map, mpc, or mpcc'),
         ),
         DeclareLaunchArgument(
             'speed',
@@ -291,11 +306,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'maximum_speed',
-            default_value='20.0',
+            default_value=str(SOFTWARE_SPEED_CEILING),
             description=(
-                'Explicit controller command ceiling in m/s; applies to '
-                'simulation and real mode'),
-        ),
+                'Software command ceiling only; requested speed and dynamic '
+                'path limits remain active.')),
         DeclareLaunchArgument(
             'mpc_profile',
             default_value='speed_0.55',
@@ -320,6 +334,18 @@ def generate_launch_description():
             'max_longitudinal_deceleration',
             default_value='4.0',
             description='UNICORN L1 deceleration limit in m/s^2',
+        ),
+        DeclareLaunchArgument(
+            'max_steering_rate',
+            default_value='6.0',
+            description='Controller steering slew limit in rad/s',
+        ),
+        DeclareLaunchArgument(
+            'transform_fault_grace',
+            default_value='0.10',
+            description=(
+                'Hold-last-command window for transient TF lookup failures; '
+                'AEB/collision/path faults still stop immediately'),
         ),
         DeclareLaunchArgument(
             'avoidance_speed_limit',

@@ -78,6 +78,7 @@ class ForzaMapNode(UnicornL1Node):
         self.declare_parameter('downscale_factor', 0.20)
         self.declare_parameter('speed_lookahead_for_steer', 0.0)
         self.declare_parameter('acceleration_filter_alpha', 0.15)
+        self.declare_parameter('steering_model_extrapolation_margin', 0.5)
         self.declare_parameter('stop_on_collision', True)
         self.declare_parameter('stop_on_emergency_stop', True)
 
@@ -95,6 +96,9 @@ class ForzaMapNode(UnicornL1Node):
                 'start_scale_speed', 'end_scale_speed', 'downscale_factor',
                 'speed_lookahead_for_steer', 'acceleration_filter_alpha'):
             setattr(self, name, float(self.get_parameter(name).value))
+        self.steering_model_extrapolation_margin = float(
+            self.get_parameter(
+                'steering_model_extrapolation_margin').value)
         if self.end_scale_speed <= self.start_scale_speed:
             raise RuntimeError(
                 'end_scale_speed must be greater than start_scale_speed')
@@ -102,14 +106,27 @@ class ForzaMapNode(UnicornL1Node):
             raise RuntimeError('downscale_factor must be in [0, 1]')
         if not 0.0 <= self.acceleration_filter_alpha <= 1.0:
             raise RuntimeError('acceleration_filter_alpha must be in [0, 1]')
-        if self.max_speed > self.steering_lookup.maximum_speed + 1e-6:
+        if self.steering_model_extrapolation_margin < 0.0:
+            raise RuntimeError(
+                'steering_model_extrapolation_margin must be non-negative')
+        model_limit = (
+            self.steering_lookup.maximum_speed
+            + self.steering_model_extrapolation_margin)
+        if self.max_speed > model_limit + 1e-6:
             raise RuntimeError(
                 'requested speed %.2f m/s exceeds steering model limit '
-                '%.2f m/s' % (
-                    self.max_speed, self.steering_lookup.maximum_speed))
+                '%.2f m/s plus the configured %.2f m/s margin' % (
+                    self.max_speed, self.steering_lookup.maximum_speed,
+                    self.steering_model_extrapolation_margin))
         self.get_logger().info(
             'ForzaETH steering model: %s (0..%.2f m/s)'
             % (table_path, self.steering_lookup.maximum_speed))
+        if self.max_speed > self.steering_lookup.maximum_speed:
+            self.get_logger().warn(
+                'ForzaETH MAP speed %.2f m/s is above the LUT maximum '
+                '%.2f m/s; steering lookup is saturated at the final '
+                'model column' % (
+                    self.max_speed, self.steering_lookup.maximum_speed))
 
     def collision_callback(self, message):
         """Ignore Gym collision flags only when launch explicitly allows it."""
@@ -226,12 +243,7 @@ class ForzaMapNode(UnicornL1Node):
             / (self.end_scale_speed - self.start_scale_speed), 0.0, 1.0)
         steering *= 1.0 - scale_progress * self.downscale_factor
         steering *= self.clamp(1.0 + speed / 10.0, 1.0, 1.25)
-        steering = self.clamp(
-            steering,
-            self.previous_steering - self.max_steering_delta,
-            self.previous_steering + self.max_steering_delta)
-        steering = self.clamp(
-            steering, -self.max_steering_angle, self.max_steering_angle)
+        steering = self.limit_steering(steering)
 
         return command_speed, steering, (
             x, y, target_x, target_y, l1_distance,

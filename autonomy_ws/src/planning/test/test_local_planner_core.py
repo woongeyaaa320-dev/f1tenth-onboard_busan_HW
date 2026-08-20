@@ -5,8 +5,10 @@ import numpy as np
 from planning.local_planner_core import (
     ClosedPathGeometry,
     adaptive_candidate_offsets,
+    adaptive_map_endpoint_threshold,
     cluster_ordered_points,
     minimum_quintic_transition_length,
+    nearest_clustered_corridor_distance,
     ordered_candidate_offsets,
     path_curvature_percentile,
     sample_closed_path,
@@ -14,6 +16,25 @@ from planning.local_planner_core import (
     speed_dependent_horizon,
     update_tracked_obstacles,
 )
+
+
+def test_map_threshold_stays_at_base_for_well_registered_walls():
+    clearances = np.asarray([0.02] * 80 + [1.0] * 20)
+    threshold = adaptive_map_endpoint_threshold(
+        clearances, 0.36, 60.0, 0.08, 0.25)
+    assert abs(threshold - 0.36) < 1e-9
+
+
+def test_map_threshold_tracks_registration_error_but_is_bounded():
+    shifted_walls = np.asarray([0.44] * 80 + [1.5] * 20)
+    threshold = adaptive_map_endpoint_threshold(
+        shifted_walls, 0.36, 60.0, 0.08, 0.25)
+    assert abs(threshold - 0.52) < 1e-9
+
+    badly_localized = np.asarray([2.0] * 100)
+    capped = adaptive_map_endpoint_threshold(
+        badly_localized, 0.36, 60.0, 0.08, 0.25)
+    assert abs(capped - 0.61) < 1e-9
 
 
 def test_adaptive_offsets_clear_both_sides_without_track_coordinates():
@@ -104,6 +125,27 @@ def test_scan_clusters_break_on_missing_beam():
     clusters = cluster_ordered_points(
         points, max_gap=0.2, min_points=2, max_diameter=0.3)
     assert len(clusters) == 2
+
+
+def test_aeb_corridor_ignores_isolated_points_rejected_by_clustering():
+    """A single noisy return cannot become an AEB obstacle by itself."""
+    indexed = [(1, 0.12, 0.0)]
+    clusters = cluster_ordered_points(
+        indexed, max_gap=0.2, min_points=3, max_diameter=0.3)
+    assert np.isinf(nearest_clustered_corridor_distance(clusters, 0.2))
+
+
+def test_aeb_corridor_accepts_a_dense_forward_cluster():
+    """A geometrically valid cluster in front still reaches AEB."""
+    indexed = [
+        (1, 0.40, -0.02),
+        (2, 0.38, 0.00),
+        (3, 0.41, 0.02),
+    ]
+    clusters = cluster_ordered_points(
+        indexed, max_gap=0.2, min_points=3, max_diameter=0.3)
+    distance = nearest_clustered_corridor_distance(clusters, 0.2)
+    assert abs(distance - 0.38) < 1e-9
 
 
 def test_dense_closed_path_sampling():

@@ -8,6 +8,32 @@ import numpy as np
 QUINTIC_SMOOTHSTEP_MAX_SECOND_DERIVATIVE = 10.0 * math.sqrt(3.0) / 3.0
 
 
+def adaptive_map_endpoint_threshold(
+        clearances, base_threshold, registration_percentile,
+        registration_margin, maximum_extra):
+    """
+    Estimate a scan-to-map wall rejection threshold from the current scan.
+
+    Track walls normally account for most valid LiDAR endpoints, while real
+    track obstacles are a minority.  A robust percentile therefore estimates
+    the current registration residual without using map coordinates.  The
+    bounded extra allowance prevents a badly localized scan from hiding every
+    obstacle indefinitely.
+    """
+    values = np.asarray(clearances, dtype=float)
+    values = values[np.isfinite(values) & (values >= 0.0)]
+    base_threshold = max(0.0, float(base_threshold))
+    maximum_extra = max(0.0, float(maximum_extra))
+    if len(values) == 0:
+        return base_threshold
+    percentile = float(np.clip(registration_percentile, 0.0, 100.0))
+    residual = float(np.percentile(values, percentile))
+    adaptive = residual + max(0.0, float(registration_margin))
+    return min(
+        base_threshold + maximum_extra,
+        max(base_threshold, adaptive))
+
+
 def angle_difference(target, source):
     """Return the wrapped signed angle from source to target."""
     return math.atan2(math.sin(target - source), math.cos(target - source))
@@ -270,6 +296,29 @@ def cluster_ordered_points(indexed_points, max_gap, min_points, max_diameter):
     if current:
         finish_cluster()
     return clusters
+
+
+def nearest_clustered_corridor_distance(clusters, half_width):
+    """
+    Return the nearest forward point from a real scan cluster in a corridor.
+
+    AEB must not react to an isolated range sample that was intentionally
+    rejected by the obstacle cluster filter.  The caller supplies clusters in
+    the vehicle base frame, so this helper remains independent of any map or
+    track geometry.
+    """
+    nearest = float('inf')
+    half_width = max(0.0, float(half_width))
+    for cluster in clusters:
+        points = np.asarray(cluster, dtype=float)
+        if points.ndim != 2 or points.shape[1] != 2:
+            continue
+        in_corridor = (
+            (points[:, 0] > 0.0)
+            & (np.abs(points[:, 1]) < half_width))
+        if np.any(in_corridor):
+            nearest = min(nearest, float(np.min(points[in_corridor, 0])))
+    return nearest
 
 
 def update_tracked_obstacles(
