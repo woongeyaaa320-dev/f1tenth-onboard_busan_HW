@@ -30,9 +30,6 @@ local_obstacle_planner_node:
     detection_range: 6.0
     # Ignore small map/scan registration residuals near mapped walls.
     map_endpoint_clearance: 0.36
-    # Adapt wall rejection to the current scan/map registration residual.
-    # This is bounded and coordinate-free: it compensates localization error
-    # without disabling detection of objects well inside the track.
     map_registration_percentile: 60.0
     map_registration_margin: 0.08
     map_registration_max_extra: 0.25
@@ -54,13 +51,18 @@ local_obstacle_planner_node:
     planning_deceleration: 4.0
     planning_distance_margin: 0.50
 
-    # Frenet pass candidates are generated from the measured obstacle radius
-    # and lateral position. No track-specific obstacle coordinates are used.
+    # Candidates derive from measured obstacle geometry, not track positions.
     candidate_offset_spacing: 0.04
     candidate_offset_count: 6
     maximum_candidate_offset: 0.70
-    # Small allowance for scan-surface centroid and real tracking error. This
-    # affects path clearance, not the visualized obstacle size or AEB range.
+    # TUM-style action-set sampling: evaluate the same left/right manoeuvre
+    # with several map-independent transition lengths.
+    candidate_transition_scales: [1.0, 1.25, 1.50]
+    # Extra tracking reserve around the physical 0.58 x 0.31 m footprint.
+    # Tune from measured lateral tracking error; no map coordinate is used.
+    # Same tracking reserve used by the simulator's passage validator.
+    # Vehicle dimensions and the independent wall/obstacle margins are
+    # applied separately, so this value must not double-count them.
     candidate_clearance_buffer: 0.03
     avoidance_before_distance: 1.80
     avoidance_after_distance: 1.10
@@ -72,6 +74,11 @@ local_obstacle_planner_node:
     # 0.17 m vehicle lateral radius + 0.02 m wall margin.
     map_clearance: 0.18
     vehicle_clearance_radius: 0.17
+    vehicle_length: 0.58
+    vehicle_width: 0.31
+    # Ackermann geometric feasibility: kappa <= tan(delta_max) / wheelbase.
+    wheelbase: 0.324
+    max_steering_angle: 0.4189
     obstacle_safety_margin: 0.01
 
     # Performance-oriented AEB: confirmed dense clusters only.  Physical

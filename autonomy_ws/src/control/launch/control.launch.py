@@ -80,6 +80,22 @@ def _launch_setup(context):
                     LaunchConfiguration('params_file').perform(context),
                     {
                         'drive_mode': drive_mode,
+                        'global_frame_id': LaunchConfiguration(
+                            'global_frame_id').perform(context),
+                        'base_frame_id': LaunchConfiguration(
+                            'base_frame_id').perform(context),
+                        'odom_topic': LaunchConfiguration(
+                            'odom_topic').perform(context),
+                        'drive_topic': LaunchConfiguration(
+                            'drive_topic').perform(context),
+                        'emergency_stop_topic': LaunchConfiguration(
+                            'emergency_stop_topic').perform(context),
+                        'wheelbase': float(LaunchConfiguration(
+                            'wheelbase').perform(context)),
+                        'max_steering_angle': float(LaunchConfiguration(
+                            'max_steering_angle').perform(context)),
+                        'max_steering_rate': float(LaunchConfiguration(
+                            'max_steering_rate').perform(context)),
                         'target_speed': requested_speed,
                         'max_speed': requested_speed,
                         'min_speed': min(0.25, requested_speed),
@@ -117,39 +133,23 @@ def _launch_setup(context):
         avoidance_speed_limit = (
             requested_speed if avoidance_value == 'auto'
             else float(avoidance_value))
-        # The upstream ForzaETH race stack uses different L1 defaults for its
-        # physical NUC configuration and its simulator.  Keep that distinction
-        # here without changing the vehicle's VESC/servo calibration.
-        if drive_mode == 'real':
-            map_parameters = {
-                't_clip_min': 0.9,
-                't_clip_max': 5.0,
-                'm_l1': 0.55,
-                'q_l1': -0.03,
-                'speed_lookahead': 0.25,
-                'lat_err_coeff': 1.0,
-                'acc_scaler_for_steer': 1.2,
-                'dec_scaler_for_steer': 0.9,
-                'start_scale_speed': 7.0,
-                'end_scale_speed': 8.0,
-                'downscale_factor': 0.20,
-                'speed_lookahead_for_steer': 0.0,
-            }
-        else:
-            map_parameters = {
-                't_clip_min': 1.0,
-                't_clip_max': 5.0,
-                'm_l1': 0.30,
-                'q_l1': 0.15,
-                'speed_lookahead': 0.0,
-                'lat_err_coeff': 1.0,
-                'acc_scaler_for_steer': 1.0,
-                'dec_scaler_for_steer': 1.0,
-                'start_scale_speed': 7.0,
-                'end_scale_speed': 8.0,
-                'downscale_factor': 0.20,
-                'speed_lookahead_for_steer': 0.0,
-            }
+        # One controller parameter set is used in both environments.  The
+        # simulator is calibrated to the physical vehicle instead of carrying
+        # a second set of mode-specific gains.
+        map_parameters = {
+            't_clip_min': 0.9,
+            't_clip_max': 5.0,
+            'm_l1': 0.55,
+            'q_l1': -0.03,
+            'speed_lookahead': 0.25,
+            'lat_err_coeff': 1.0,
+            'acc_scaler_for_steer': 1.2,
+            'dec_scaler_for_steer': 0.9,
+            'start_scale_speed': 7.0,
+            'end_scale_speed': 8.0,
+            'downscale_factor': 0.20,
+            'speed_lookahead_for_steer': 0.0,
+        }
         return [
             LogInfo(msg=(
                 'Controller=forza_map (ForzaETH MAP) '
@@ -189,6 +189,10 @@ def _launch_setup(context):
                     'max_longitudinal_deceleration': float(
                         LaunchConfiguration(
                             'max_longitudinal_deceleration').perform(context)),
+                    'wheelbase': float(LaunchConfiguration(
+                        'wheelbase').perform(context)),
+                    'max_steering_angle': float(LaunchConfiguration(
+                        'max_steering_angle').perform(context)),
                     'max_steering_rate': float(LaunchConfiguration(
                         'max_steering_rate').perform(context)),
                     'transform_fault_grace': float(LaunchConfiguration(
@@ -196,11 +200,8 @@ def _launch_setup(context):
                     'avoidance_speed_limit': avoidance_speed_limit,
                     'use_dynamic_speed_limit': True,
                     'steering_lookup_table': table_path,
-                    # A Gym collision must not latch the controller off during
-                    # repeated simulation testing. Physical-car mode always
-                    # retains the collision stop.
-                    'stop_on_collision': drive_mode == 'real',
-                    'stop_on_emergency_stop': drive_mode == 'real',
+                    'stop_on_collision': True,
+                    'stop_on_emergency_stop': True,
                 }, map_parameters],
             ),
         ]
@@ -254,6 +255,10 @@ def _launch_setup(context):
                 'max_longitudinal_acceleration').perform(context)),
             'max_longitudinal_deceleration': float(LaunchConfiguration(
                 'max_longitudinal_deceleration').perform(context)),
+            'wheelbase': float(LaunchConfiguration(
+                'wheelbase').perform(context)),
+            'max_steering_angle': float(LaunchConfiguration(
+                'max_steering_angle').perform(context)),
             'max_steering_rate': float(LaunchConfiguration(
                 'max_steering_rate').perform(context)),
             'transform_fault_grace': float(LaunchConfiguration(
@@ -331,6 +336,12 @@ def _launch_setup(context):
             'collision_topic').perform(context),
         'emergency_stop_topic': LaunchConfiguration(
             'emergency_stop_topic').perform(context),
+        'wheelbase': float(LaunchConfiguration(
+            'wheelbase').perform(context)),
+        'max_steering_angle': float(LaunchConfiguration(
+            'max_steering_angle').perform(context)),
+        'max_steering_rate': float(LaunchConfiguration(
+            'max_steering_rate').perform(context)),
     })
 
     return [
@@ -383,8 +394,8 @@ def generate_launch_description():
             'steering_lookup_table',
             default_value='auto',
             description=(
-                'ForzaETH MAP steering CSV; auto uses the linear bicycle '
-                'model as the initial sim/real model'),
+                'ForzaETH MAP steering CSV; auto selects the official SIM '
+                'model and is intentionally rejected in real mode'),
         ),
         DeclareLaunchArgument('enabled', default_value='false'),
         DeclareLaunchArgument('global_frame_id', default_value='map'),
@@ -394,6 +405,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'odom_topic', default_value='/ego_racecar/odom'),
         DeclareLaunchArgument('drive_topic', default_value='/drive'),
+        DeclareLaunchArgument('wheelbase', default_value='0.324'),
+        DeclareLaunchArgument('max_steering_angle', default_value='0.4189'),
         DeclareLaunchArgument(
             'min_command_speed',
             default_value='0.0',
@@ -412,14 +425,14 @@ def generate_launch_description():
             description='UNICORN L1 deceleration command limit in m/s^2'),
         DeclareLaunchArgument(
             'max_steering_rate',
-            default_value='6.0',
-            description='Maximum commanded steering slew in rad/s'),
+            default_value='3.2',
+            description='Physical steering slew limit in rad/s'),
         DeclareLaunchArgument(
             'transform_fault_grace',
             default_value='0.10',
             description=(
-                'Seconds to hold the last safe command for transient TF '
-                'lookup failures; safety inputs still stop immediately')),
+                'Seconds to hold the last safe command for a transient TF '
+                'fault; collision and AEB still stop immediately')),
         DeclareLaunchArgument(
             'avoidance_speed_limit',
             default_value='auto',

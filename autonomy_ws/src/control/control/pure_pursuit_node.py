@@ -8,7 +8,7 @@ from rclpy.time import Time
 
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry, Path
-from std_msgs.msg import Float64
+from std_msgs.msg import Bool, Float32
 from std_srvs.srv import SetBool
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -24,12 +24,24 @@ class PurePursuitNode(Node):
         self.declare_parameter('base_frame_id', 'ego_racecar/base_link')
         self.declare_parameter('odom_topic', '/ego_racecar/odom')
         self.declare_parameter('path_topic', '/planning/path')
-        self.declare_parameter('sim_drive_topic', '/drive')
-        self.declare_parameter('real_speed_topic', '/commands/motor/speed')
-        self.declare_parameter('real_servo_topic', '/commands/servo/position')
+        self.declare_parameter(
+            'emergency_stop_topic', '/safety/emergency_stop')
+        self.declare_parameter(
+            'avoidance_active_topic', '/planning/avoidance_active')
+        self.declare_parameter('speed_limit_topic', '/planning/speed_limit')
+        # Controllers publish one platform-neutral Ackermann command in both
+        # modes. The simulator bridge or the real ackermann_mux/VESC adapter
+        # owns the final actuator conversion.
+        self.declare_parameter('drive_topic', '/drive')
 
-        self.declare_parameter('wheelbase', 0.33)
+        self.declare_parameter('wheelbase', 0.324)
         self.declare_parameter('lookahead_distance', 0.70)
+        # Velocity-scaled lookahead is the standard Adaptive/Regulated Pure
+        # Pursuit mechanism.  Distance limits, rather than track coordinates,
+        # keep the behavior portable across maps and waypoint resolutions.
+        self.declare_parameter('lookahead_time', 0.20)
+        self.declare_parameter('minimum_lookahead_distance', 0.55)
+        self.declare_parameter('maximum_lookahead_distance', 2.50)
         self.declare_parameter('max_steering_angle', 0.4189)
         self.declare_parameter('max_path_distance', 1.00)
         self.declare_parameter('max_heading_error', 1.0472)
@@ -40,13 +52,9 @@ class PurePursuitNode(Node):
         self.declare_parameter('min_speed', 0.25)
         self.declare_parameter('max_speed', 0.80)
         self.declare_parameter('corner_slowdown_gain', 0.55)
-
-        self.declare_parameter('speed_to_erpm_gain', 3000.0)
-        self.declare_parameter('speed_to_erpm_offset', 0.0)
-        self.declare_parameter('servo_center', 0.5)
-        self.declare_parameter('servo_gain', 1.0)
-        self.declare_parameter('servo_min', 0.0)
-        self.declare_parameter('servo_max', 1.0)
+        self.declare_parameter('use_dynamic_speed_limit', True)
+        self.declare_parameter('speed_limit_timeout', 0.50)
+        self.declare_parameter('max_steering_rate', 3.2)
 
         self.declare_parameter('control_rate', 30.0)
         self.declare_parameter('odom_timeout', 0.50)
@@ -59,13 +67,22 @@ class PurePursuitNode(Node):
         self.base_frame_id = self.get_parameter('base_frame_id').value
         self.odom_topic = self.get_parameter('odom_topic').value
         self.path_topic = self.get_parameter('path_topic').value
-        self.sim_drive_topic = self.get_parameter('sim_drive_topic').value
-        self.real_speed_topic = self.get_parameter('real_speed_topic').value
-        self.real_servo_topic = self.get_parameter('real_servo_topic').value
+        self.emergency_stop_topic = self.get_parameter(
+            'emergency_stop_topic').value
+        self.avoidance_active_topic = self.get_parameter(
+            'avoidance_active_topic').value
+        self.speed_limit_topic = self.get_parameter('speed_limit_topic').value
+        self.drive_topic = self.get_parameter('drive_topic').value
 
         self.wheelbase = float(self.get_parameter('wheelbase').value)
         self.lookahead_distance = float(
             self.get_parameter('lookahead_distance').value)
+        self.lookahead_time = float(
+            self.get_parameter('lookahead_time').value)
+        self.minimum_lookahead_distance = float(self.get_parameter(
+            'minimum_lookahead_distance').value)
+        self.maximum_lookahead_distance = float(self.get_parameter(
+            'maximum_lookahead_distance').value)
         self.max_steering_angle = float(
             self.get_parameter('max_steering_angle').value)
         self.max_path_distance = float(
@@ -82,15 +99,12 @@ class PurePursuitNode(Node):
         self.max_speed = float(self.get_parameter('max_speed').value)
         self.corner_slowdown_gain = float(
             self.get_parameter('corner_slowdown_gain').value)
-
-        self.speed_to_erpm_gain = float(
-            self.get_parameter('speed_to_erpm_gain').value)
-        self.speed_to_erpm_offset = float(
-            self.get_parameter('speed_to_erpm_offset').value)
-        self.servo_center = float(self.get_parameter('servo_center').value)
-        self.servo_gain = float(self.get_parameter('servo_gain').value)
-        self.servo_min = float(self.get_parameter('servo_min').value)
-        self.servo_max = float(self.get_parameter('servo_max').value)
+        self.use_dynamic_speed_limit = bool(
+            self.get_parameter('use_dynamic_speed_limit').value)
+        self.speed_limit_timeout = float(
+            self.get_parameter('speed_limit_timeout').value)
+        self.max_steering_rate = float(
+            self.get_parameter('max_steering_rate').value)
 
         self.odom_timeout = float(self.get_parameter('odom_timeout').value)
         self.path_timeout = float(self.get_parameter('path_timeout').value)
@@ -98,12 +112,26 @@ class PurePursuitNode(Node):
 
         if self.drive_mode not in ('sim', 'real'):
             raise RuntimeError("drive_mode must be 'sim' or 'real'")
+        if (self.minimum_lookahead_distance <= 0.0
+                or self.maximum_lookahead_distance
+                < self.minimum_lookahead_distance):
+            raise RuntimeError('invalid lookahead distance limits')
+        if self.lookahead_time < 0.0:
+            raise RuntimeError('lookahead_time must be non-negative')
+        if self.max_steering_rate <= 0.0:
+            raise RuntimeError('max_steering_rate must be positive')
 
         self.current_odom = None
         self.current_path = None
         self.last_odom_time = None
         self.last_path_time = None
         self.nearest_index = None
+        self.emergency_stop = False
+        self.avoidance_active = False
+        self.dynamic_speed_limit = None
+        self.last_speed_limit_time = None
+        self.previous_steering = 0.0
+        self.control_dt = 1.0 / max(control_rate, 1.0)
         self.last_status_message = None
         self.last_status_time = None
 
@@ -114,13 +142,18 @@ class PurePursuitNode(Node):
             Odometry, self.odom_topic, self.odom_callback, 10)
         self.create_subscription(
             Path, self.path_topic, self.path_callback, 10)
+        self.create_subscription(
+            Bool, self.emergency_stop_topic,
+            self.emergency_stop_callback, 10)
+        self.create_subscription(
+            Bool, self.avoidance_active_topic,
+            self.avoidance_active_callback, 10)
+        self.create_subscription(
+            Float32, self.speed_limit_topic,
+            self.speed_limit_callback, 10)
 
-        self.sim_drive_pub = self.create_publisher(
-            AckermannDriveStamped, self.sim_drive_topic, 10)
-        self.real_speed_pub = self.create_publisher(
-            Float64, self.real_speed_topic, 10)
-        self.real_servo_pub = self.create_publisher(
-            Float64, self.real_servo_topic, 10)
+        self.drive_pub = self.create_publisher(
+            AckermannDriveStamped, self.drive_topic, 10)
 
         self.enable_service = self.create_service(
             SetBool, '/control/enable', self.enable_callback)
@@ -134,8 +167,7 @@ class PurePursuitNode(Node):
                 self.global_frame_id,
                 self.base_frame_id,
                 self.path_topic,
-                self.sim_drive_topic if self.drive_mode == 'sim'
-                else self.real_speed_topic,
+                self.drive_topic,
             ))
         self.get_logger().info(
             'Start/stop: ros2 service call /control/enable '
@@ -153,10 +185,25 @@ class PurePursuitNode(Node):
         self.current_path = msg
         self.last_path_time = self.get_clock().now()
 
+    def emergency_stop_callback(self, msg):
+        self.emergency_stop = bool(msg.data)
+        if self.emergency_stop:
+            self.publish_stop()
+
+    def avoidance_active_callback(self, msg):
+        self.avoidance_active = bool(msg.data)
+
+    def speed_limit_callback(self, msg):
+        value = float(msg.data)
+        if math.isfinite(value) and value >= 0.0:
+            self.dynamic_speed_limit = value
+            self.last_speed_limit_time = self.get_clock().now()
+
     def enable_callback(self, request, response):
         if not request.data:
             self.enabled = False
             self.nearest_index = None
+            self.previous_steering = 0.0
             self.publish_stop()
             response.success = True
             response.message = 'Pure Pursuit stopped'
@@ -169,6 +216,13 @@ class PurePursuitNode(Node):
             self.publish_stop()
             response.success = False
             response.message = 'Cannot start: ' + problem
+            self.get_logger().error(response.message)
+            return response
+        if self.emergency_stop:
+            self.enabled = False
+            self.publish_stop()
+            response.success = False
+            response.message = 'Cannot start: emergency stop is active'
             self.get_logger().error(response.message)
             return response
 
@@ -207,6 +261,7 @@ class PurePursuitNode(Node):
             return response
 
         self.enabled = True
+        self.previous_steering = 0.0
         response.success = True
         response.message = 'Pure Pursuit enabled'
         self.get_logger().info(response.message)
@@ -248,6 +303,19 @@ class PurePursuitNode(Node):
         if self.age_seconds(self.last_odom_time) > self.odom_timeout:
             return 'odometry is stale'
         return None
+
+    def measured_speed(self):
+        if self.current_odom is None:
+            return 0.0
+        return max(0.0, float(self.current_odom.twist.twist.linear.x))
+
+    def active_lookahead_distance(self):
+        scaled = self.lookahead_distance + self.lookahead_time * self.measured_speed()
+        return self.clamp(
+            scaled,
+            self.minimum_lookahead_distance,
+            self.maximum_lookahead_distance,
+        )
 
     def candidate_indices(self, count):
         if self.nearest_index is None:
@@ -302,7 +370,7 @@ class PurePursuitNode(Node):
             travelled += math.hypot(point.x - previous.x, point.y - previous.y)
             previous = point
 
-            if travelled < self.lookahead_distance:
+            if travelled < self.active_lookahead_distance():
                 continue
 
             dx = point.x - x
@@ -326,46 +394,40 @@ class PurePursuitNode(Node):
         steer_ratio = abs(steering) / max(self.max_steering_angle, 1e-6)
         speed = self.target_speed * (
             1.0 - self.corner_slowdown_gain * steer_ratio)
-        return self.clamp(speed, self.min_speed, self.max_speed)
+        speed = self.clamp(speed, self.min_speed, self.max_speed)
+        if (self.avoidance_active
+                and self.use_dynamic_speed_limit
+                and self.dynamic_speed_limit is not None
+                and self.age_seconds(self.last_speed_limit_time)
+                <= self.speed_limit_timeout):
+            speed = min(speed, self.dynamic_speed_limit)
+        return max(0.0, speed)
 
     def publish_drive(self, speed, steering):
-        if self.drive_mode == 'sim':
-            msg = AckermannDriveStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = self.base_frame_id
-            msg.drive.speed = float(speed)
-            msg.drive.steering_angle = float(steering)
-            self.sim_drive_pub.publish(msg)
-            return
-
-        speed_msg = Float64()
-        servo_msg = Float64()
-        speed_msg.data = (
-            self.speed_to_erpm_gain * speed + self.speed_to_erpm_offset)
-        servo_msg.data = self.clamp(
-            self.servo_center + self.servo_gain * steering,
-            self.servo_min,
-            self.servo_max,
-        )
-        self.real_speed_pub.publish(speed_msg)
-        self.real_servo_pub.publish(servo_msg)
+        msg = AckermannDriveStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.base_frame_id
+        msg.drive.speed = float(speed)
+        msg.drive.steering_angle = float(steering)
+        self.drive_pub.publish(msg)
 
     def publish_stop(self):
-        if self.drive_mode == 'sim':
-            msg = AckermannDriveStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = self.base_frame_id
-            msg.drive.speed = 0.0
-            msg.drive.steering_angle = 0.0
-            self.sim_drive_pub.publish(msg)
-            return
+        msg = AckermannDriveStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.base_frame_id
+        msg.drive.speed = 0.0
+        msg.drive.steering_angle = 0.0
+        self.drive_pub.publish(msg)
 
-        speed_msg = Float64()
-        servo_msg = Float64()
-        speed_msg.data = 0.0
-        servo_msg.data = self.servo_center
-        self.real_speed_pub.publish(speed_msg)
-        self.real_servo_pub.publish(servo_msg)
+    def rate_limit_steering(self, requested):
+        maximum_delta = self.max_steering_rate * self.control_dt
+        steering = self.clamp(
+            requested,
+            self.previous_steering - maximum_delta,
+            self.previous_steering + maximum_delta,
+        )
+        self.previous_steering = steering
+        return steering
 
     def warn_throttled(self, message):
         now = self.get_clock().now()
@@ -379,6 +441,11 @@ class PurePursuitNode(Node):
     def control_loop(self):
         if not self.enabled:
             self.publish_stop()
+            return
+
+        if self.emergency_stop:
+            self.publish_stop()
+            self.warn_throttled('Safety stop: emergency stop is active')
             return
 
         problem = self.readiness_problem()
@@ -402,7 +469,8 @@ class PurePursuitNode(Node):
             return
 
         x_car, y_car, lookahead_dist, _ = lookahead
-        steering = self.compute_steering(x_car, y_car, lookahead_dist)
+        steering = self.rate_limit_steering(
+            self.compute_steering(x_car, y_car, lookahead_dist))
         self.publish_drive(self.compute_speed(steering), steering)
 
 

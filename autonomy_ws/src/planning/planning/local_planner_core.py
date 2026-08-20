@@ -3,6 +3,7 @@
 import math
 
 import numpy as np
+from scipy.interpolate import CubicSpline
 
 
 QUINTIC_SMOOTHSTEP_MAX_SECOND_DERIVATIVE = 10.0 * math.sqrt(3.0) / 3.0
@@ -11,27 +12,18 @@ QUINTIC_SMOOTHSTEP_MAX_SECOND_DERIVATIVE = 10.0 * math.sqrt(3.0) / 3.0
 def adaptive_map_endpoint_threshold(
         clearances, base_threshold, registration_percentile,
         registration_margin, maximum_extra):
-    """
-    Estimate a scan-to-map wall rejection threshold from the current scan.
-
-    Track walls normally account for most valid LiDAR endpoints, while real
-    track obstacles are a minority.  A robust percentile therefore estimates
-    the current registration residual without using map coordinates.  The
-    bounded extra allowance prevents a badly localized scan from hiding every
-    obstacle indefinitely.
-    """
+    """Bound the scan/map wall threshold using current registration error."""
     values = np.asarray(clearances, dtype=float)
     values = values[np.isfinite(values) & (values >= 0.0)]
     base_threshold = max(0.0, float(base_threshold))
     maximum_extra = max(0.0, float(maximum_extra))
     if len(values) == 0:
         return base_threshold
-    percentile = float(np.clip(registration_percentile, 0.0, 100.0))
-    residual = float(np.percentile(values, percentile))
+    residual = float(np.percentile(
+        values, np.clip(registration_percentile, 0.0, 100.0)))
     adaptive = residual + max(0.0, float(registration_margin))
-    return min(
-        base_threshold + maximum_extra,
-        max(base_threshold, adaptive))
+    return min(base_threshold + maximum_extra,
+               max(base_threshold, adaptive))
 
 
 def angle_difference(target, source):
@@ -40,13 +32,23 @@ def angle_difference(target, source):
 
 
 def ordered_candidate_offsets(offsets, locked_offset, obstacle_lateral):
-    """Prefer a stable avoidance side without excluding a safe fallback side."""
+    """
+    Prefer a free side initially and commit to it during the manoeuvre.
+
+    Reversing sides after lateral motion has begun creates a new path through
+    the obstacle. Conservative initial object extents keep that first choice
+    valid as more of a static obstacle becomes visible; if it is no longer
+    safe, stopping is preferable to crossing through the object.
+    """
     offsets = list(offsets)
     if locked_offset is not None:
         locked_sign = math.copysign(1.0, locked_offset)
-        offsets = [value for value in offsets if abs(value) > 1e-3]
+        offsets = [
+            value for value in offsets
+            if abs(value) > 1e-3
+            and math.copysign(1.0, value) == locked_sign
+        ]
         offsets.sort(key=lambda value: (
-            math.copysign(1.0, value) != locked_sign,
             abs(value - locked_offset),
             abs(value),
         ))
@@ -60,14 +62,7 @@ def ordered_candidate_offsets(offsets, locked_offset, obstacle_lateral):
 def adaptive_candidate_offsets(
         obstacle_lateral, required_clearance, spacing, count,
         maximum_offset):
-    """
-    Generate map-independent Frenet pass candidates around an obstacle.
-
-    The first candidate on either side just clears the measured obstacle and
-    subsequent candidates add a small lateral margin.  Map collision checking
-    remains responsible for rejecting candidates that leave the drivable
-    corridor, so no track coordinates or preferred side are embedded here.
-    """
+    """Generate map-independent Frenet candidates around an obstacle."""
     required_clearance = max(0.0, float(required_clearance))
     spacing = max(1e-3, float(spacing))
     count = max(1, int(count))
@@ -85,8 +80,6 @@ def adaptive_candidate_offsets(
         if abs(right) <= maximum_offset + 1e-9:
             values.append(right)
 
-    # Preserve deterministic ordering while removing numerically identical
-    # candidates (for example when required_clearance is zero).
     unique = []
     for value in values:
         if not any(abs(value - other) < 1e-6 for other in unique):
@@ -95,13 +88,7 @@ def adaptive_candidate_offsets(
 
 
 def minimum_quintic_transition_length(offset, maximum_curvature):
-    """
-    Approximate the minimum smoothstep length for a curvature constraint.
-
-    A quintic Frenet shift has a known maximum second derivative.  This bound
-    makes high-speed detours longer and smoother without using map-specific
-    coordinates.  The caller still checks the resulting path against the map.
-    """
+    """Return a generic curvature-bounded smoothstep transition length."""
     offset = abs(float(offset))
     maximum_curvature = max(1e-3, float(maximum_curvature))
     return math.sqrt(
@@ -146,6 +133,94 @@ def path_curvature_percentile(points, percentile=90.0):
     if len(curvature) == 0:
         return 0.0
     return float(np.percentile(curvature, np.clip(percentile, 0.0, 100.0)))
+
+
+def spline_path_curvature_percentile(
+        points, percentile=90.0, sample_spacing=0.03):
+    """Estimate local curvature without polyline waypoint impulses."""
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2 or len(points) < 4:
+        return path_curvature_percentile(points, percentile)
+    keep = np.concatenate((
+        [True], np.linalg.norm(np.diff(points, axis=0), axis=1) > 1e-5))
+    points = points[keep]
+    if len(points) < 4:
+        return path_curvature_percentile(points, percentile)
+    lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    cumulative = np.concatenate(([0.0], np.cumsum(lengths)))
+    spline_x = CubicSpline(cumulative, points[:, 0], bc_type='natural')
+    spline_y = CubicSpline(cumulative, points[:, 1], bc_type='natural')
+    count = max(
+        len(points) * 3,
+        int(math.ceil(cumulative[-1] / max(sample_spacing, 1e-3))) + 1)
+    samples = np.linspace(0.0, cumulative[-1], count)
+    dx = spline_x(samples, 1)
+    dy = spline_y(samples, 1)
+    ddx = spline_x(samples, 2)
+    ddy = spline_y(samples, 2)
+    denominator = np.maximum((dx * dx + dy * dy) ** 1.5, 1e-9)
+    curvature = np.abs(dx * ddy - dy * ddx) / denominator
+    return float(np.percentile(
+        curvature, np.clip(percentile, 0.0, 100.0)))
+
+
+def closed_spline_curvature_percentile(
+        points, percentile=99.0, sample_spacing=0.03):
+    """Estimate closed-path curvature without polyline-corner impulses."""
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2 or len(points) < 4:
+        raise ValueError('Closed spline requires at least four XY points')
+    if np.linalg.norm(points[0] - points[-1]) < 1e-6:
+        points = points[:-1]
+    segments = np.roll(points, -1, axis=0) - points
+    lengths = np.linalg.norm(segments, axis=1)
+    if np.any(lengths < 1e-5):
+        raise ValueError('Closed spline contains duplicate adjacent points')
+    cumulative = np.concatenate(([0.0], np.cumsum(lengths)))
+    closed = np.vstack((points, points[0]))
+    spline_x = CubicSpline(
+        cumulative, closed[:, 0], bc_type='periodic')
+    spline_y = CubicSpline(
+        cumulative, closed[:, 1], bc_type='periodic')
+    count = max(
+        len(points) * 4,
+        int(math.ceil(cumulative[-1] / max(sample_spacing, 1e-3))))
+    samples = np.linspace(
+        0.0, cumulative[-1], count, endpoint=False)
+    dx = spline_x(samples, 1)
+    dy = spline_y(samples, 1)
+    ddx = spline_x(samples, 2)
+    ddy = spline_y(samples, 2)
+    denominator = np.maximum((dx * dx + dy * dy) ** 1.5, 1e-9)
+    curvature = np.abs(dx * ddy - dy * ddx) / denominator
+    return float(np.percentile(
+        curvature, np.clip(percentile, 0.0, 100.0)))
+
+
+def swept_rectangle_samples(points, length, width, lateral_buffer=0.0):
+    """Sample the swept rectangular vehicle footprint along a path."""
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2 or len(points) < 2:
+        raise ValueError('Footprint path requires at least two XY points')
+    tangent = np.gradient(points, axis=0)
+    norm = np.linalg.norm(tangent, axis=1)
+    if np.any(norm < 1e-6):
+        raise ValueError('Footprint path contains a degenerate tangent')
+    tangent /= norm[:, None]
+    normal = np.column_stack((-tangent[:, 1], tangent[:, 0]))
+
+    half_length = 0.5 * max(0.0, float(length))
+    half_width = (
+        0.5 * max(0.0, float(width))
+        + max(0.0, float(lateral_buffer)))
+    samples = []
+    for longitudinal in (-half_length, 0.0, half_length):
+        for lateral in (-half_width, 0.0, half_width):
+            samples.append(
+                points
+                + longitudinal * tangent
+                + lateral * normal)
+    return np.concatenate(samples, axis=0)
 
 
 class ClosedPathGeometry:
@@ -230,6 +305,130 @@ class ClosedPathGeometry:
             10.0 * after_progress ** 3
             - 15.0 * after_progress ** 4
             + 6.0 * after_progress ** 5)
+        return self.points + self.normals * (offset * weights[:, None])
+
+    def reachable_offset_maneuver(
+            self, vehicle_s, center_s, offset,
+            preferred_before_distance, after_distance):
+        """
+        Create an avoidance path whose forward transition is reachable.
+
+        A conventional obstacle-centred bump starts ``before_distance`` ahead
+        of the obstacle.  If an occluded obstacle is first observed after that
+        start point, publishing the old bump asks the vehicle to jump onto the
+        middle of a lateral transition.  Instead, retain the reference path
+        up to the preferred start when it is still ahead, or start at the
+        current vehicle projection when detection is late.  Curvature checks
+        can then reject a genuinely too-short manoeuvre and trigger AEB.
+        """
+        vehicle_s = float(vehicle_s) % self.length
+        center_s = float(center_s) % self.length
+        offset = float(offset)
+        preferred_before_distance = max(
+            1e-3, float(preferred_before_distance))
+        after_distance = max(1e-3, float(after_distance))
+
+        distance_to_center = self.forward_distance(vehicle_s, center_s)
+        transition_distance = min(
+            preferred_before_distance, distance_to_center)
+        start_s = (
+            center_s - transition_distance) % self.length
+
+        point_s = self.cumulative[:-1]
+        from_start = np.mod(point_s - start_s, self.length)
+        weights = np.zeros(len(self.points), dtype=float)
+
+        before = from_start <= transition_distance
+        before_progress = np.clip(
+            from_start[before] / transition_distance, 0.0, 1.0)
+        weights[before] = (
+            10.0 * before_progress ** 3
+            - 15.0 * before_progress ** 4
+            + 6.0 * before_progress ** 5)
+
+        from_center = np.mod(point_s - center_s, self.length)
+        after = from_center <= after_distance
+        after_progress = np.clip(
+            from_center[after] / after_distance, 0.0, 1.0)
+        weights[after] = np.maximum(
+            weights[after],
+            1.0 - (
+                10.0 * after_progress ** 3
+                - 15.0 * after_progress ** 4
+                + 6.0 * after_progress ** 5))
+        return self.points + self.normals * (offset * weights[:, None])
+
+    def reachable_offset_plateau(
+            self, vehicle_s, center_s, offset,
+            preferred_before_distance, after_distance,
+            hold_before=0.0, hold_after=0.0):
+        """
+        Create a reachable offset with a full-clearance obstacle plateau.
+
+        The original obstacle-centred bump reaches its requested offset at one
+        point and immediately starts returning.  A finite vehicle passing a
+        finite obstacle instead needs to retain the offset until its complete
+        footprint has cleared the object.  This primitive uses two independent
+        minimum-jerk transitions joined by that constant-offset section.
+
+        All distances are Frenet arc lengths.  The transition starts at the
+        vehicle projection when the preferred start is already behind, so a
+        newly detected obstacle never causes a discontinuous path jump.
+        """
+        vehicle_s = float(vehicle_s) % self.length
+        center_s = float(center_s) % self.length
+        offset = float(offset)
+        preferred_before_distance = max(
+            1e-3, float(preferred_before_distance))
+        after_distance = max(1e-3, float(after_distance))
+        hold_before = max(0.0, float(hold_before))
+        hold_after = max(0.0, float(hold_after))
+
+        distance_to_center = self.forward_distance(vehicle_s, center_s)
+        distance_to_plateau = distance_to_center - hold_before
+        if distance_to_plateau <= 1e-3:
+            return None
+        before_distance = min(
+            preferred_before_distance, distance_to_plateau)
+        start_s = (
+            center_s - hold_before - before_distance) % self.length
+        plateau_end_s = (center_s + hold_after) % self.length
+
+        point_s = self.cumulative[:-1]
+        from_start = np.mod(point_s - start_s, self.length)
+        plateau_start = before_distance
+        plateau_end = before_distance + hold_before + hold_after
+        maneuver_end = plateau_end + after_distance
+        weights = np.zeros(len(self.points), dtype=float)
+
+        transition_in = from_start <= plateau_start
+        progress_in = np.clip(
+            from_start[transition_in] / before_distance, 0.0, 1.0)
+        weights[transition_in] = (
+            10.0 * progress_in ** 3
+            - 15.0 * progress_in ** 4
+            + 6.0 * progress_in ** 5)
+
+        plateau = (
+            (from_start > plateau_start)
+            & (from_start <= plateau_end))
+        weights[plateau] = 1.0
+
+        transition_out = (
+            (from_start > plateau_end)
+            & (from_start <= maneuver_end))
+        progress_out = np.clip(
+            (from_start[transition_out] - plateau_end) / after_distance,
+            0.0, 1.0)
+        weights[transition_out] = 1.0 - (
+            10.0 * progress_out ** 3
+            - 15.0 * progress_out ** 4
+            + 6.0 * progress_out ** 5)
+
+        # ``plateau_end_s`` documents the geometric anchor and guards against
+        # accidentally accepting a manoeuvre that wraps over an entire lap.
+        if self.forward_distance(start_s, plateau_end_s) >= self.length - 1e-3:
+            return None
         return self.points + self.normals * (offset * weights[:, None])
 
     def forward_distance(self, start_s, target_s):
@@ -339,7 +538,24 @@ def update_tracked_obstacles(
     matched_indices = set()
     original_track_count = len(tracks)
 
-    for center, radius, s_value, lateral in observations:
+    for observation in observations:
+        center, radius, s_value, lateral = observation[:4]
+        surface_points = (
+            np.asarray(observation[4], dtype=float).reshape((-1, 2))
+            if len(observation) >= 5 and observation[4] is not None
+            else None)
+        lateral_min = (
+            float(observation[5]) if len(observation) >= 7
+            else float(lateral) - float(radius))
+        lateral_max = (
+            float(observation[6]) if len(observation) >= 7
+            else float(lateral) + float(radius))
+        longitudinal_min = (
+            float(observation[7]) if len(observation) >= 9
+            else -float(radius))
+        longitudinal_max = (
+            float(observation[8]) if len(observation) >= 9
+            else float(radius))
         center = np.asarray(center, dtype=float)
         best_index = None
         best_distance = float(match_distance)
@@ -358,6 +574,13 @@ def update_tracked_obstacles(
                 'radius': float(radius),
                 's': float(s_value),
                 'lateral': float(lateral),
+                'lateral_min': lateral_min,
+                'lateral_max': lateral_max,
+                'longitudinal_min': longitudinal_min,
+                'longitudinal_max': longitudinal_max,
+                'surface_points': (
+                    surface_points.copy()
+                    if surface_points is not None else None),
                 'hits': 1,
                 'last_seen': float(now_seconds),
             })
@@ -366,9 +589,8 @@ def update_tracked_obstacles(
 
         matched_indices.add(best_index)
         track = tracks[best_index]
-        # Competition obstacles are static. A running mean prevents the
-        # visible LiDAR surface from moving the estimated center and Frenet
-        # offset as the car changes viewing angle around the same object.
+        # Static obstacles should not move as their visible LiDAR surface
+        # changes. A running mean is map-independent and reduces path chatter.
         previous_hits = max(1, int(track.get('hits', 1)))
         observation_weight = 1.0 / (previous_hits + 1.0)
         track['center'] = (
@@ -381,7 +603,78 @@ def update_tracked_obstacles(
         track['lateral'] = (
             (1.0 - observation_weight) * float(track['lateral'])
             + observation_weight * float(lateral))
+        # Collision geometry must follow the currently observed surface.
+        # Averaging a LiDAR surface centroid and then treating it as an object
+        # centre double-counts the object's depth.  Keep the latest boundary
+        # samples while the slowly averaged centroid remains useful only for
+        # stable scan-to-scan association.
+        track['lateral_min'] = lateral_min
+        track['lateral_max'] = lateral_max
+        track['longitudinal_min'] = longitudinal_min
+        track['longitudinal_max'] = longitudinal_max
+        track['surface_points'] = (
+            surface_points.copy() if surface_points is not None else None)
         track['hits'] = previous_hits + 1
         track['last_seen'] = float(now_seconds)
 
     return tracks, next_id
+
+
+def minimum_surface_clearance(path_points, surface_points, required_distance):
+    """
+    Return clearance between a path centreline and observed boundaries.
+
+    ``surface_points`` are occupied LiDAR endpoints, not estimated object
+    centres.  Measuring directly to that boundary avoids assuming a fixed
+    obstacle diameter and works for compact obstacles of different shapes.
+    The caller supplies the vehicle radius and independent safety margin.
+    """
+    path_points = np.asarray(path_points, dtype=float).reshape((-1, 2))
+    surface_points = np.asarray(surface_points, dtype=float).reshape((-1, 2))
+    if len(path_points) == 0 or len(surface_points) == 0:
+        return float('inf')
+    differences = (
+        path_points[:, None, :] - surface_points[None, :, :])
+    minimum_distance = float(np.min(np.linalg.norm(differences, axis=2)))
+    return minimum_distance - max(0.0, float(required_distance))
+
+
+def minimum_surface_footprint_clearance(
+        path_points, surface_points, vehicle_length, vehicle_width,
+        safety_margin=0.0):
+    """
+    Return signed clearance from scan endpoints to a swept vehicle box.
+
+    The path is the vehicle centre trajectory.  At every sampled pose, scan
+    endpoints are transformed into the local tangent frame and tested against
+    the physical rectangular footprint expanded by ``safety_margin``.  A
+    negative result means that an observed endpoint lies inside the expanded
+    footprint.  This retains the measured-boundary model while accounting for
+    the fact that an F1TENTH car is much longer than its lateral half-width.
+    """
+    path_points = np.asarray(path_points, dtype=float).reshape((-1, 2))
+    surface_points = np.asarray(surface_points, dtype=float).reshape((-1, 2))
+    if len(path_points) < 2 or len(surface_points) == 0:
+        return float('inf')
+
+    tangent = np.gradient(path_points, axis=0)
+    tangent_norm = np.linalg.norm(tangent, axis=1)
+    if np.any(tangent_norm < 1e-6):
+        raise ValueError('Footprint path contains a degenerate tangent')
+    tangent /= tangent_norm[:, None]
+    normal = np.column_stack((-tangent[:, 1], tangent[:, 0]))
+
+    relative = surface_points[None, :, :] - path_points[:, None, :]
+    longitudinal = np.abs(np.einsum('ijk,ik->ij', relative, tangent))
+    lateral = np.abs(np.einsum('ijk,ik->ij', relative, normal))
+    margin = max(0.0, float(safety_margin))
+    q_longitudinal = longitudinal - (
+        0.5 * max(0.0, float(vehicle_length)) + margin)
+    q_lateral = lateral - (
+        0.5 * max(0.0, float(vehicle_width)) + margin)
+
+    outside = np.hypot(
+        np.maximum(q_longitudinal, 0.0),
+        np.maximum(q_lateral, 0.0))
+    inside = np.minimum(np.maximum(q_longitudinal, q_lateral), 0.0)
+    return float(np.min(outside + inside))
