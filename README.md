@@ -59,10 +59,24 @@ source install/setup.bash
 
 ## 공통 접속
 
-현재 실차 온보드의 핫스팟 주소는 `172.20.10.10`입니다.
+현재 사용하는 두 실차 온보드 접속 주소입니다.
+
+| 차량 | SSH 접속 |
+|---|---|
+| 차량 A | `jeonbotdae@172.20.10.10` |
+| 차량 B | `misys@172.20.10.9` |
+
+차량 A:
 
 ```bash
 ssh -tt jeonbotdae@172.20.10.10 \
+  'docker start f1tenth >/dev/null 2>&1 || true; docker exec -it f1tenth bash'
+```
+
+차량 B:
+
+```bash
+ssh -tt misys@172.20.10.9 \
   'docker start f1tenth >/dev/null 2>&1 || true; docker exec -it f1tenth bash'
 ```
 
@@ -260,7 +274,12 @@ ros2 run tf2_ros tf2_echo map base_link
 노트북 호스트에서 실행합니다. 실행 중인 온보드 터미널은 종료됩니다.
 
 ```bash
+# 차량 A
 ssh -t jeonbotdae@172.20.10.10 'docker restart f1tenth'
+
+# 차량 B
+ssh -t misys@172.20.10.9 'docker restart f1tenth'
+
 docker restart f1tenth_gym_ros_humble-sim-1
 ```
 
