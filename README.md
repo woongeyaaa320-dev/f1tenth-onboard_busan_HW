@@ -31,7 +31,8 @@ VESC 하드웨어 보정값은 `vehicle_overrides/`에 보관하며 제어기 �
 
 | 이름 | 방식 | 용도 |
 |---|---|---|
-| `pure_pursuit` | Pure Pursuit | 저속 기준선 |
+| `pure_pursuit` | Pure Pursuit | 기존 저속 기준선 |
+| `kyeongho_pp` | Pure Pursuit + speed cap/watchdog | `kye0ngho/f1_tenth` 실차 어댑터 |
 | `unicorn_l1` | 속도·곡률 기반 L1/Pursuit | UNICORN 계열 비교 |
 | `forza_map` | Model- and Acceleration-based Pursuit | 기본 실차 검증 |
 | `mpc` | Linear MPC | MPC 기준선 |
@@ -58,10 +59,10 @@ source install/setup.bash
 
 ## 공통 접속
 
-현재 실차 온보드의 핫스팟 주소는 `172.20.10.9`입니다.
+현재 실차 온보드의 핫스팟 주소는 `172.20.10.10`입니다.
 
 ```bash
-ssh -tt misys@172.20.10.9 \
+ssh -tt jeonbotdae@172.20.10.10 \
   'docker start f1tenth >/dev/null 2>&1 || true; docker exec -it f1tenth bash'
 ```
 
@@ -169,7 +170,8 @@ ros2 run tf2_ros tf2_echo map base_link
 
 ### 터미널 6 — 자율주행 노드
 
-처음에는 `1.0 m/s`로 확인합니다.
+처음에는 `1.0 m/s`로 확인합니다. `maximum_speed`는 launch에서 허용할
+명령 상한이며 VESC나 차량의 실제 성능을 높이는 설정은 아닙니다.
 
 ```bash
 cd /home/misys/shared_dir
@@ -179,6 +181,7 @@ cd /home/misys/shared_dir
   track:=track03 \
   controller:=forza_map \
   speed:=1.0 \
+  maximum_speed:=20.0 \
   steering_lookup_table:=auto
 ```
 
@@ -189,10 +192,30 @@ cd /home/misys/shared_dir
 
 ```text
 controller:=pure_pursuit
+controller:=kyeongho_pp
 controller:=unicorn_l1
 controller:=mpc
 controller:=mpcc
 ```
+
+`kyeongho_pp` 실차 실행 예시:
+
+```bash
+cd /home/misys/shared_dir
+
+./run_autonomy.sh \
+  mode:=real \
+  controller:=kyeongho_pp \
+  speed:=1.0 \
+  maximum_speed:=20.0 \
+  waypoint_csv:=/home/misys/shared_dir/autonomy_ws/install/planning/share/planning/waypoints/track03_raceline.csv \
+  min_command_speed:=0.30
+```
+
+이 어댑터는 [kye0ngho/f1_tenth](https://github.com/kye0ngho/f1_tenth)의
+Pure Pursuit, 회피 속도 제한, stall watchdog 및 kill-switch 구조를 참고합니다.
+원본처럼 VESC ERPM·서보 토픽을 직접 출력하지 않고 `/auto`에
+`AckermannDriveStamped`를 발행하므로 기존 mux와 차량 캘리브레이션을 유지합니다.
 
 ### 터미널 4 — 주행 시작/정지
 
@@ -237,7 +260,7 @@ ros2 run tf2_ros tf2_echo map base_link
 노트북 호스트에서 실행합니다. 실행 중인 온보드 터미널은 종료됩니다.
 
 ```bash
-ssh -t misys@172.20.10.9 'docker restart f1tenth'
+ssh -t jeonbotdae@172.20.10.10 'docker restart f1tenth'
 docker restart f1tenth_gym_ros_humble-sim-1
 ```
 
