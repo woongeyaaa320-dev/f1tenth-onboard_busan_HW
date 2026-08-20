@@ -47,11 +47,18 @@ local_obstacle_planner_node:
     planning_deceleration: 4.0
     planning_distance_margin: 0.50
 
-    candidate_offsets: [0.0, -0.20, 0.20, -0.24, 0.24, -0.28, 0.28, -0.36, 0.36, -0.44, 0.44, -0.52, 0.52, -0.60, 0.60]
+    # Frenet pass candidates are generated from the measured obstacle radius
+    # and lateral position. No track-specific obstacle coordinates are used.
+    candidate_offset_spacing: 0.04
+    candidate_offset_count: 6
+    maximum_candidate_offset: 0.70
+    # Small allowance for scan-surface centroid and real tracking error. This
+    # affects path clearance, not the visualized obstacle size or AEB range.
+    candidate_clearance_buffer: 0.05
     avoidance_before_distance: 1.80
     avoidance_after_distance: 1.10
     maximum_avoidance_before_distance: 4.0
-    maximum_avoidance_after_distance: 2.0
+    maximum_avoidance_after_distance: 4.0
     avoidance_before_time: 0.75
     avoidance_after_time: 0.40
     path_sample_spacing: 0.04

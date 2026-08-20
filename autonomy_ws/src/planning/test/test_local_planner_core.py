@@ -4,7 +4,9 @@ import numpy as np
 
 from planning.local_planner_core import (
     ClosedPathGeometry,
+    adaptive_candidate_offsets,
     cluster_ordered_points,
+    minimum_quintic_transition_length,
     ordered_candidate_offsets,
     path_curvature_percentile,
     sample_closed_path,
@@ -12,6 +14,27 @@ from planning.local_planner_core import (
     speed_dependent_horizon,
     update_tracked_obstacles,
 )
+
+
+def test_adaptive_offsets_clear_both_sides_without_track_coordinates():
+    offsets = adaptive_candidate_offsets(
+        obstacle_lateral=0.10,
+        required_clearance=0.30,
+        spacing=0.05,
+        count=3,
+        maximum_offset=0.70)
+    assert offsets[0] == 0.0
+    assert any(value >= 0.40 for value in offsets)
+    assert any(value <= -0.20 for value in offsets)
+    assert len(offsets) == len(set(round(value, 6) for value in offsets))
+
+
+def test_quintic_transition_length_grows_with_offset_and_speed_constraint():
+    short = minimum_quintic_transition_length(0.20, 0.50)
+    wide = minimum_quintic_transition_length(0.40, 0.50)
+    high_speed_limit = minimum_quintic_transition_length(0.20, 0.10)
+    assert wide > short
+    assert high_speed_limit > short
 
 
 def test_locked_avoidance_side_is_preferred_but_not_exclusive():

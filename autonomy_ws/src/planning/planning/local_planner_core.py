@@ -5,6 +5,9 @@ import math
 import numpy as np
 
 
+QUINTIC_SMOOTHSTEP_MAX_SECOND_DERIVATIVE = 10.0 * math.sqrt(3.0) / 3.0
+
+
 def angle_difference(target, source):
     """Return the wrapped signed angle from source to target."""
     return math.atan2(math.sin(target - source), math.cos(target - source))
@@ -26,6 +29,58 @@ def ordered_candidate_offsets(offsets, locked_offset, obstacle_lateral):
     else:
         offsets.sort(key=lambda value: (value < 0.0, abs(value)))
     return offsets
+
+
+def adaptive_candidate_offsets(
+        obstacle_lateral, required_clearance, spacing, count,
+        maximum_offset):
+    """
+    Generate map-independent Frenet pass candidates around an obstacle.
+
+    The first candidate on either side just clears the measured obstacle and
+    subsequent candidates add a small lateral margin.  Map collision checking
+    remains responsible for rejecting candidates that leave the drivable
+    corridor, so no track coordinates or preferred side are embedded here.
+    """
+    required_clearance = max(0.0, float(required_clearance))
+    spacing = max(1e-3, float(spacing))
+    count = max(1, int(count))
+    maximum_offset = max(0.0, float(maximum_offset))
+    obstacle_lateral = float(obstacle_lateral)
+
+    values = [0.0]
+    left_start = obstacle_lateral + required_clearance
+    right_start = obstacle_lateral - required_clearance
+    for index in range(count):
+        left = left_start + index * spacing
+        right = right_start - index * spacing
+        if abs(left) <= maximum_offset + 1e-9:
+            values.append(left)
+        if abs(right) <= maximum_offset + 1e-9:
+            values.append(right)
+
+    # Preserve deterministic ordering while removing numerically identical
+    # candidates (for example when required_clearance is zero).
+    unique = []
+    for value in values:
+        if not any(abs(value - other) < 1e-6 for other in unique):
+            unique.append(float(value))
+    return unique
+
+
+def minimum_quintic_transition_length(offset, maximum_curvature):
+    """
+    Approximate the minimum smoothstep length for a curvature constraint.
+
+    A quintic Frenet shift has a known maximum second derivative.  This bound
+    makes high-speed detours longer and smoother without using map-specific
+    coordinates.  The caller still checks the resulting path against the map.
+    """
+    offset = abs(float(offset))
+    maximum_curvature = max(1e-3, float(maximum_curvature))
+    return math.sqrt(
+        QUINTIC_SMOOTHSTEP_MAX_SECOND_DERIVATIVE
+        * offset / maximum_curvature)
 
 
 def speed_dependent_horizon(
@@ -262,12 +317,22 @@ def update_tracked_obstacles(
 
         matched_indices.add(best_index)
         track = tracks[best_index]
-        track['center'] = 0.65 * track['center'] + 0.35 * center
+        # Competition obstacles are static. A running mean prevents the
+        # visible LiDAR surface from moving the estimated center and Frenet
+        # offset as the car changes viewing angle around the same object.
+        previous_hits = max(1, int(track.get('hits', 1)))
+        observation_weight = 1.0 / (previous_hits + 1.0)
+        track['center'] = (
+            (1.0 - observation_weight) * track['center']
+            + observation_weight * center)
         track['radius'] = max(float(track['radius']), float(radius))
-        track['s'] = 0.65 * float(track['s']) + 0.35 * float(s_value)
+        track['s'] = (
+            (1.0 - observation_weight) * float(track['s'])
+            + observation_weight * float(s_value))
         track['lateral'] = (
-            0.65 * float(track['lateral']) + 0.35 * float(lateral))
-        track['hits'] = int(track.get('hits', 1)) + 1
+            (1.0 - observation_weight) * float(track['lateral'])
+            + observation_weight * float(lateral))
+        track['hits'] = previous_hits + 1
         track['last_seen'] = float(now_seconds)
 
     return tracks, next_id
