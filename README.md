@@ -163,6 +163,11 @@ process group만 종료하고 다음 실행 전에 남은 autonomy 자식 프로
 보정해야 합니다. 따라서 같은 소스는 달성 가능하지만, 측정 없이 동일 동역학을
 보장할 수는 없습니다.
 
+현재 기준선 결과는 `track03 + pure_pursuit`에서 장애물 없이 2랩 완주,
+정적 장애물 2개를 매 랩 재배치한 조건에서 3랩 완주입니다. 411 m 고속 시험로의
+10 m/s 요청에서는 제어 명령이 9.97 m/s까지 도달했지만 AMCL 오차가 누적됐으므로,
+이는 실차 10 m/s 승인 결과가 아니라 고속 localization 개선이 필요하다는 근거입니다.
+
 ## 출처
 
 - [F1TENTH Pure Pursuit](https://github.com/f1tenth-dev/pure_pursuit)
