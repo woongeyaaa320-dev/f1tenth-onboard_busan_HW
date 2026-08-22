@@ -30,6 +30,10 @@ class PurePursuitNode(Node):
         self.declare_parameter(
             'avoidance_active_topic', '/planning/avoidance_active')
         self.declare_parameter('speed_limit_topic', '/planning/speed_limit')
+        # Rule 3.3.1 manual on/off kill switch, independent of AEB. See
+        # kill_switch_node.py for why it is a dedicated topic rather than a
+        # second publisher on emergency_stop_topic.
+        self.declare_parameter('kill_switch_topic', '/safety/kill_switch')
         # Controllers publish one platform-neutral Ackermann command in both
         # modes. The simulator bridge or the real ackermann_mux/VESC adapter
         # owns the final actuator conversion.
@@ -83,6 +87,7 @@ class PurePursuitNode(Node):
         self.avoidance_active_topic = self.get_parameter(
             'avoidance_active_topic').value
         self.speed_limit_topic = self.get_parameter('speed_limit_topic').value
+        self.kill_switch_topic = self.get_parameter('kill_switch_topic').value
         self.drive_topic = self.get_parameter('drive_topic').value
 
         self.wheelbase = float(self.get_parameter('wheelbase').value)
@@ -166,6 +171,7 @@ class PurePursuitNode(Node):
         self.last_path_time = None
         self.nearest_index = None
         self.emergency_stop = False
+        self.kill_switch_engaged = False
         self.avoidance_active = False
         self.dynamic_speed_limit = None
         self.last_speed_limit_time = None
@@ -185,6 +191,9 @@ class PurePursuitNode(Node):
         self.create_subscription(
             Bool, self.emergency_stop_topic,
             self.emergency_stop_callback, 10)
+        self.create_subscription(
+            Bool, self.kill_switch_topic,
+            self.kill_switch_callback, 10)
         self.create_subscription(
             Bool, self.avoidance_active_topic,
             self.avoidance_active_callback, 10)
@@ -285,6 +294,11 @@ class PurePursuitNode(Node):
         if self.emergency_stop:
             self.publish_stop()
 
+    def kill_switch_callback(self, msg):
+        self.kill_switch_engaged = bool(msg.data)
+        if self.kill_switch_engaged:
+            self.publish_stop()
+
     def avoidance_active_callback(self, msg):
         self.avoidance_active = bool(msg.data)
 
@@ -319,6 +333,13 @@ class PurePursuitNode(Node):
             self.publish_stop()
             response.success = False
             response.message = 'Cannot start: emergency stop is active'
+            self.get_logger().error(response.message)
+            return response
+        if self.kill_switch_engaged:
+            self.enabled = False
+            self.publish_stop()
+            response.success = False
+            response.message = 'Cannot start: kill switch is engaged'
             self.get_logger().error(response.message)
             return response
 
@@ -608,6 +629,11 @@ class PurePursuitNode(Node):
         if self.emergency_stop:
             self.publish_stop()
             self.warn_throttled('Safety stop: emergency stop is active')
+            return
+
+        if self.kill_switch_engaged:
+            self.publish_stop()
+            self.warn_throttled('Safety stop: kill switch is engaged')
             return
 
         problem = self.readiness_problem()

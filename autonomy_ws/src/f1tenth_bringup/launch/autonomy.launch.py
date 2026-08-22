@@ -198,6 +198,13 @@ def _launch_setup(context, catalog_path, vehicle_path):
                     'steering_lookup_table').perform(context),
                 'collision_topic': '/control/collision',
                 'emergency_stop_topic': '/safety/emergency_stop',
+                'joy_topic': LaunchConfiguration('joy_topic').perform(context),
+                'kill_switch_topic': LaunchConfiguration(
+                    'kill_switch_topic').perform(context),
+                'kill_switch_button': LaunchConfiguration(
+                    'kill_switch_button').perform(context),
+                'kill_switch_publish_rate': LaunchConfiguration(
+                    'kill_switch_publish_rate').perform(context),
             }),
         ]
         if _as_bool(LaunchConfiguration('localization').perform(context)):
@@ -295,6 +302,13 @@ def _launch_setup(context, catalog_path, vehicle_path):
                 'avoidance_speed_limit').perform(context),
             'steering_lookup_table': LaunchConfiguration(
                 'steering_lookup_table').perform(context),
+            'joy_topic': LaunchConfiguration('joy_topic').perform(context),
+            'kill_switch_topic': LaunchConfiguration(
+                'kill_switch_topic').perform(context),
+            'kill_switch_button': LaunchConfiguration(
+                'kill_switch_button').perform(context),
+            'kill_switch_publish_rate': LaunchConfiguration(
+                'kill_switch_publish_rate').perform(context),
         }),
     ]
 
@@ -394,6 +408,24 @@ def generate_launch_description():
                 'Simulation obstacle seed; -1 randomizes each fresh run'),
         ),
         DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('joy_topic', default_value='/joy'),
+        DeclareLaunchArgument(
+            'kill_switch_topic', default_value='/safety/kill_switch'),
+        DeclareLaunchArgument(
+            'kill_switch_button',
+            # Confirmed 2026-08-22 against the team's Bluetooth DualShock 4
+            # controller (Sony 054c:09cc) via SDL2/joy_node: buttons[6] is
+            # L2. A different controller/driver may enumerate differently --
+            # reconfirm with `ros2 topic echo /joy --field buttons` if the
+            # controller changes.
+            default_value='6',
+            description=(
+                'Rule 3.3.1 manual on/off kill switch: /joy buttons[] index '
+                'that toggles it.')),
+        DeclareLaunchArgument(
+            'kill_switch_publish_rate',
+            default_value='20.0',
+            description='Hz to continuously re-publish the latched state'),
         OpaqueFunction(
             function=_launch_setup,
             kwargs={

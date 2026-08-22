@@ -124,13 +124,45 @@ class UnicornL1Node(Node):
         # replaces its waypoint-index window so behavior is path-resolution
         # independent.
         self.declare_parameter('t_clip_min', 0.70)
-        self.declare_parameter('t_clip_max', 8.00)
+        # 8.00 (UNICORN's original default) is over 1/3 of track03's ~23m
+        # lap: on a straight run-up (near-zero curvature, so the
+        # l1_curvature_preview_distance ceiling below doesn't engage) the L1
+        # target point can land well past where the track actually bends,
+        # steering into a wall the reference path itself already curves
+        # away from. Reproduced: closed-loop sim test collision at a
+        # near-straight, high-speed (~5.9 m/s) segment despite near-zero
+        # cross-track error. Track03 and track02 are both short practice
+        # tracks (~23m); size this to the track, not to ForzaETH's larger
+        # reference tracks.
+        self.declare_parameter('t_clip_max', 3.00)
         self.declare_parameter('m_l1', 0.47)
         self.declare_parameter('q_l1', -0.20)
         self.declare_parameter('curvature_factor', 0.145)
         self.declare_parameter('future_constant', 0.05)
         self.declare_parameter('curvature_window_start', 0.50)
         self.declare_parameter('curvature_window_end', 1.50)
+        # Independent geometric ceiling on L1 distance: the lookahead point
+        # may not reach further than `maximum_preview_heading` radians of
+        # heading change along the sharpest curvature sampled within
+        # `l1_curvature_preview_distance` ahead. Mirrors
+        # pure_pursuit_node.active_lookahead_distance()'s curvature cap,
+        # which unicorn_l1 previously lacked -- the only shrink term it had
+        # was the reactive `curvature_factor * mean_curvature * speed^2`
+        # subtraction inside the narrow curvature_window above, which is too
+        # weak/late to stop L1 from overshooting into an upcoming tight bend
+        # at high speed (reproduced failure: highspeed_unicorn10 diverges and
+        # safety-stops at t=8.8s).
+        self.declare_parameter('maximum_preview_heading', 0.70)
+        self.declare_parameter('l1_curvature_preview_distance', 3.00)
+        # Cross-track error previously scaled steering multiplicatively and
+        # unboundedly (exp(ln2 * |lateral_error|) -> 2x at 1m error, growing
+        # without limit). ForzaETH's validated MAP controller instead lets
+        # lateral error reduce commanded *speed* (see speed_adjust_lat_err /
+        # command_speed above), not amplify steering gain; an unbounded
+        # steering multiplier is a positive-feedback risk once tracking
+        # starts to diverge. Clamp the same correction instead of removing
+        # it outright, to preserve its benefit while rejoining the path.
+        self.declare_parameter('max_lateral_error_steer_gain', 1.30)
         # Read the spatial speed profile ahead of the current pose so braking
         # begins before the L1 steering transition, especially when an
         # occluded static obstacle first becomes visible near a bend.
@@ -171,6 +203,8 @@ class UnicornL1Node(Node):
                 't_clip_min', 't_clip_max', 'm_l1',
                 'q_l1', 'curvature_factor', 'future_constant',
                 'curvature_window_start', 'curvature_window_end',
+                'maximum_preview_heading', 'l1_curvature_preview_distance',
+                'max_lateral_error_steer_gain',
                 'speed_lookahead',
                 'lat_err_coeff', 'speed_factor_for_lat_err',
                 'speed_factor_for_curvature', 'heading_kp', 'heading_kd',
@@ -205,6 +239,14 @@ class UnicornL1Node(Node):
             raise RuntimeError('max_steering_rate must be positive')
         if self.transform_fault_grace < 0.0:
             raise RuntimeError('transform_fault_grace must be non-negative')
+        if self.maximum_preview_heading <= 0.0:
+            raise RuntimeError('maximum_preview_heading must be positive')
+        if self.l1_curvature_preview_distance <= 0.0:
+            raise RuntimeError(
+                'l1_curvature_preview_distance must be positive')
+        if self.max_lateral_error_steer_gain < 1.0:
+            raise RuntimeError(
+                'max_lateral_error_steer_gain must be >= 1.0')
         self.current_odom = None
         self.last_odom_time = None
         self.last_path_time = None
@@ -608,6 +650,23 @@ class UnicornL1Node(Node):
             math.sqrt(2.0) * abs(future_lateral_error))
         l1_distance = self.clamp(raw_l1, lower_l1, self.t_clip_max)
 
+        # Independent geometric ceiling: don't let L1 reach past a point that
+        # would require more than maximum_preview_heading radians of heading
+        # change, using the sharpest curvature in a longer preview window (not
+        # just the narrow curvature_window used for curvature_scaler above).
+        # This is a proactive cap -- it engages before the car enters a tight
+        # bend, rather than only reacting once mean_curvature or the lateral
+        # error floor already reflect it.
+        preview_s = np.linspace(
+            future_s, future_s + self.l1_curvature_preview_distance, num=12)
+        preview_curvature = float(np.max(np.abs(
+            self.interpolate_path(self.path_curvature, preview_s))))
+        if preview_curvature > 1e-3:
+            curvature_ceiling = (
+                self.maximum_preview_heading / preview_curvature)
+            l1_distance = min(
+                l1_distance, max(lower_l1, curvature_ceiling))
+
         target_s = future_s + l1_distance
         target_x = float(self.interpolate_path(
             self.path_points[:, 0], target_s)[0])
@@ -648,8 +707,14 @@ class UnicornL1Node(Node):
             gain * self.filtered_heading_error
             + self.heading_kd * derivative)
 
-        # Match UNICORN's lateral-error steering scaling and steering slew cap.
-        steering *= math.exp(math.log(2.0) * abs(future_lateral_error))
+        # UNICORN's lateral-error steering scaling, clamped: unbounded growth
+        # (2x at 1m error and rising) is a positive-feedback risk once
+        # tracking starts to diverge, which ForzaETH's validated MAP
+        # controller avoids by scaling *speed*, not steering gain, on lateral
+        # error. Keep the corrective benefit but cap its multiplier.
+        steering *= min(
+            math.exp(math.log(2.0) * abs(future_lateral_error)),
+            self.max_lateral_error_steer_gain)
         steering = self.limit_steering(steering)
 
         return command_speed, steering, (

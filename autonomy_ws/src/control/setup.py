@@ -44,6 +44,7 @@ setup(
             'nonlinear_mpcc_node = control.nonlinear_mpcc_node:main',
             'unicorn_l1_node = control.unicorn_l1_node:main',
             'forza_map_node = control.forza_map_node:main',
+            'kill_switch_node = control.kill_switch_node:main',
         ],
     },
 )

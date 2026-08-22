@@ -46,6 +46,10 @@ class LinearMpcNode(Node):
         self.declare_parameter('collision_topic', '/ego_racecar/collision')
         self.declare_parameter(
             'emergency_stop_topic', '/safety/emergency_stop')
+        # Rule 3.3.1 manual on/off kill switch, independent of AEB. See
+        # kill_switch_node.py for why it is a dedicated topic rather than a
+        # second publisher on emergency_stop_topic.
+        self.declare_parameter('kill_switch_topic', '/safety/kill_switch')
 
         self.declare_parameter('wheelbase', 0.33)
         self.declare_parameter('horizon_steps', 12)
@@ -89,6 +93,8 @@ class LinearMpcNode(Node):
         self.collision_topic = self.get_parameter('collision_topic').value
         self.emergency_stop_topic = self.get_parameter(
             'emergency_stop_topic').value
+        self.kill_switch_topic = self.get_parameter(
+            'kill_switch_topic').value
 
         self.wheelbase = float(self.get_parameter('wheelbase').value)
         self.horizon = int(self.get_parameter('horizon_steps').value)
@@ -151,6 +157,7 @@ class LinearMpcNode(Node):
         self.last_path_time = None
         self.collision = False
         self.emergency_stop = False
+        self.kill_switch_engaged = False
         self.path_points = None
         self.path_yaw = None
         self.path_curvature = None
@@ -177,6 +184,11 @@ class LinearMpcNode(Node):
             Bool,
             self.emergency_stop_topic,
             self.emergency_stop_callback,
+            10)
+        self.create_subscription(
+            Bool,
+            self.kill_switch_topic,
+            self.kill_switch_callback,
             10)
 
         self.drive_pub = self.create_publisher(
@@ -217,6 +229,11 @@ class LinearMpcNode(Node):
     def emergency_stop_callback(self, msg):
         self.emergency_stop = bool(msg.data)
         if self.emergency_stop:
+            self.publish_stop()
+
+    def kill_switch_callback(self, msg):
+        self.kill_switch_engaged = bool(msg.data)
+        if self.kill_switch_engaged:
             self.publish_stop()
 
     def path_callback(self, msg):
@@ -403,6 +420,8 @@ class LinearMpcNode(Node):
             return 'collision is active; reset simulator pose first'
         if self.emergency_stop:
             return 'local planner emergency stop is active'
+        if self.kill_switch_engaged:
+            return 'manual kill switch is engaged'
         return None
 
     def candidate_indices(self):

@@ -110,8 +110,24 @@ def _launch_setup(context):
                         'target_speed': requested_speed,
                         'max_speed': requested_speed,
                         'min_speed': min(0.25, requested_speed),
+                        # params.yaml's values for these two were not taking
+                        # effect at runtime (node kept its code defaults of
+                        # 60 deg / 1.0 m regardless of file content) --
+                        # setting them here, in the same inline-dict
+                        # mechanism already used for every other launch-arg
+                        # override above, sidesteps whatever was preventing
+                        # the file-based params from loading.
+                        'max_heading_error': 1.3090,
+                        'max_path_distance': 1.30,
                     },
                 ],
+            ),
+            Node(
+                package='control',
+                executable='kill_switch_node',
+                name='kill_switch_node',
+                output='screen',
+                parameters=[{'kill_switch_button': 6}],
             ),
         ]
 
@@ -215,6 +231,13 @@ def _launch_setup(context):
                     'stop_on_emergency_stop': True,
                 }, map_parameters],
             ),
+            Node(
+                package='control',
+                executable='kill_switch_node',
+                name='kill_switch_node',
+                output='screen',
+                parameters=[{'kill_switch_button': 6}],
+            ),
         ]
 
     if controller == 'unicorn_l1':
@@ -290,6 +313,13 @@ def _launch_setup(context):
                 name='unicorn_l1_node',
                 output='screen',
                 parameters=[parameters],
+            ),
+            Node(
+                package='control',
+                executable='kill_switch_node',
+                name='kill_switch_node',
+                output='screen',
+                parameters=[{'kill_switch_button': 6}],
             ),
         ]
 

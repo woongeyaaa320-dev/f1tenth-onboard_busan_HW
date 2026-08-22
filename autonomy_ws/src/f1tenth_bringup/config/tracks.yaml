@@ -19,3 +19,9 @@ tracks:
     raceline: high_speed_test_raceline.csv
     start: raceline
 
+
+  track04:
+    map_name: track04
+    map_ext: .pgm
+    raceline: track04_raceline.csv
+    start: raceline

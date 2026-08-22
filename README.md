@@ -1,24 +1,8 @@
-# F1TENTH 온보드 — 공통 Sim-to-Real 스택
+# F1TENTH 온보드 — race_v1
 
-ROS 2 Humble 기반 실차 배포 브랜치입니다. 시뮬레이션 저장소와 동일한
-`planning`, `control`, `f1tenth_bringup`, `track03` map/raceline을 사용하며,
-실행 시 핵심 변경은 `mode:=sim`/`mode:=real`입니다.
-
-## 공통/환경별 항목
-
-| 항목 | 시뮬레이션 | 실차 |
-|---|---|---|
-| planning/controller/AMCL 설정 | 공통 | 공통 |
-| map/raceline | `track03` | `track03` (동일 해시) |
-| 차량 크기/휠베이스/LiDAR 위치 | 실차 측정값 | 실차 측정값 |
-| base frame | `ego_racecar/base_link` | `base_link` |
-| odometry | `/ego_racecar/odom` | `/odom` |
-| Ackermann 출력 | `/drive` | `/auto` → mux → VESC |
-| 시작 자세 | raceline에서 자동 | RViz `2D Pose Estimate` |
-
-하드웨어 드라이버, VESC 보정, 실센서 노이즈와 TF namespace는 환경
-어댑터입니다. 제어기에서 VESC ERPM/servo를 직접 출력하지 않으므로 기존 차량
-보정은 유지됩니다.
+ROS 2 Humble 기반 실차 배포 브랜치입니다. `track04`(신규 매핑 트랙)를
+기본으로 하며, 6개 터미널로 하드웨어/localization/시각화/자율주행을
+나눠서 띄우는 방식을 기준으로 합니다.
 
 ## 한 번만 빌드
 
@@ -33,140 +17,156 @@ colcon build --symlink-install --packages-select \
 source install/setup.bash
 ```
 
-## 실차 실행
+## 실차 실행 — 터미널 6개
 
-노트북 터미널마다 접속합니다.
+각 터미널마다 로봇에 접속:
 
 ```bash
-ssh -tt jeonbotdae@192.168.1.7 \
-  'docker start f1tenth >/dev/null 2>&1 || true; docker exec -it f1tenth bash'
+ssh jeonbotdae@192.168.1.7
+docker exec -it f1tenth bash
 ```
 
-각 온보드 터미널 공통 환경:
+(컨테이너가 꺼져 있으면 먼저 `docker start f1tenth`)
+
+컨테이너 안 공통 환경 (**모든 터미널에서 필수** — 특히 `ROS_DOMAIN_ID`
+빠뜨리면 노드끼리 서로 안 보입니다):
 
 ```bash
 export ROS_DOMAIN_ID=30
-export ROS_LOCALHOST_ONLY=0
-export ROS2CLI_NO_DAEMON=1
 source /opt/ros/humble/setup.bash
 source /home/misys/f1tenth_ws/install/setup.bash
-source /home/misys/shared_dir/autonomy_ws/install/setup.bash
 ```
 
-### 터미널 1 — 하드웨어
+### 터미널 1 — 하드웨어 Bringup
 
 ```bash
 ros2 launch f1tenth_stack bringup_launch.py
 ```
 
-`Opened joystick`, `Connected to VESC`, `Connected to a network device`를
-확인합니다. 이 워크스페이스와 VESC 설정은 제어기 실험 중 변경하지 않습니다.
+`Opened joystick`, `Connected to VESC`, LiDAR `Connected to a network device`
+확인. **이 터미널은 절대 두 번 실행하지 마세요** — 같은 시리얼 포트를
+두 프로세스가 잡으면 VESC 통신이 깨지고 드라이버가 죽습니다
+(`Out-of-sync with VESC`, segfault). 이미 떠 있는지 헷갈리면:
+```bash
+ps aux | grep bringup_launch | grep -v grep
+```
 
-### 터미널 2 — Localization + Planning + Controller
+### 터미널 2 — Map Server
 
 ```bash
+ros2 run nav2_map_server map_server --ros-args \
+  -r __node:=map_server \
+  -p yaml_filename:=/home/misys/shared_dir/maps/track04.yaml \
+  -p topic:=map -p frame_id:=map -p use_sim_time:=false
+```
+
+### 터미널 3 — AMCL
+
+```bash
+ros2 run nav2_amcl amcl --ros-args \
+  -r __node:=amcl \
+  --params-file /home/misys/shared_dir/config/amcl.yaml
+```
+
+### 터미널 4 — Lifecycle Activation
+
+Terminal 1~3이 다 뜬 뒤:
+
+```bash
+ros2 daemon stop && ros2 daemon start
+sleep 2
+
+ros2 lifecycle set /map_server configure
+ros2 lifecycle set /map_server activate
+ros2 lifecycle get /map_server   # active [3] 확인
+
+ros2 lifecycle set /amcl configure
+ros2 lifecycle set /amcl activate
+ros2 lifecycle get /amcl         # active [3] 확인
+```
+
+### 터미널 5 — RViz (노트북 호스트, SSH 아님)
+
+```bash
+xhost +si:localuser:root
+docker exec -it -e DISPLAY=$DISPLAY -e ROS_DOMAIN_ID=30 -e ROS_LOCALHOST_ONLY=0 \
+  f1tenth_gym_ros_humble-sim-1 \
+  bash -lc '
+    source /opt/ros/humble/setup.bash
+    source /sim_ws/install/setup.bash
+    exec rviz2 -d /sim_ws/install/f1tenth_gym_ros/share/f1tenth_gym_ros/launch/gym_bridge.rviz
+  '
+```
+
+**2D Pose Estimate**로 실제 차량 위치/방향을 지정합니다 (Terminal 3의
+AMCL이 살아있어야 반영됨). LaserScan(빨간 점)이 지도 벽에 맞는지 확인.
+
+### 터미널 6 — Autonomy
+
+```bash
+source /home/misys/shared_dir/autonomy_ws/install/setup.bash
 cd /home/misys/shared_dir
-./run_autonomy.sh \
-  mode:=real track:=track03 controller:=pure_pursuit \
-  speed:=1.0 maximum_speed:=20.0
+./run_autonomy.sh mode:=real track:=track04 controller:=pure_pursuit \
+  speed:=10.0 maximum_speed:=20.0 localization:=false \
+  max_longitudinal_acceleration:=10.0 \
+  max_longitudinal_deceleration:=8.0
 ```
 
-이 명령 하나가 map server, 공통 AMCL, 전역경로, 장애물 플래너와 선택한
-제어기를 실행합니다. 별도의 lifecycle 명령은 필요 없습니다. 모든 제어기는
-비활성 상태로 시작합니다.
+`localization:=false` 필수 — 안 붙이면 Terminal 2/3과 내부 localization이
+중복으로 떠서 `/map_server`, `/amcl`이 2개씩 생기고 서로 충돌합니다.
 
-### 터미널 3 — RViz 및 초기 자세
+로그에 `num waypoints: 452` 확인 (최적화된 track04 raceline).
 
-노트북에서 ROS domain 30으로 RViz를 실행한 뒤 `2D Pose Estimate`를 지정합니다.
-`map → odom → base_link → laser`가 연결되고 LaserScan이 지도 벽과 맞아야 합니다.
-
-```bash
-export ROS_DOMAIN_ID=30
-export ROS_LOCALHOST_ONLY=0
-source /opt/ros/humble/setup.bash
-rviz2
-```
-
-### 터미널 4 — 시작/정지
+## 시작/정지 · 킬스위치
 
 ```bash
 ros2 service call /control/enable std_srvs/srv/SetBool "{data: true}"
 ros2 service call /control/enable std_srvs/srv/SetBool "{data: false}"
 ```
 
-첫 실차 검증은 `speed:=1.0`과 충분한 공간에서 수행합니다. `maximum_speed`는
-소프트웨어 입력 검증 상한일 뿐 VESC·모터·배터리의 물리 한계를 높이지 않습니다.
-
-## 시뮬레이션과 동일한 명령 형태
-
-로컬 F1TENTH Gym 컨테이너에서는 같은 launch에 mode만 바꿉니다.
-
+물리 킬스위치는 조이스틱 **L2 (buttons[6])** — enable 하기 전에 항상 확인:
 ```bash
-./run_autonomy.sh \
-  mode:=sim track:=track03 controller:=pure_pursuit \
-  speed:=1.0 maximum_speed:=20.0 \
-  obstacles:=false rviz:=true
+ros2 topic echo /safety/kill_switch
 ```
+`false`로 뜨고 L2 누르면 `true`로 바뀌는지 확인. 안 뜨면 `kill_switch_node`가
+launch에 안 붙은 것이니 `control/launch/control.launch.py`의 해당 컨트롤러
+분기에 `kill_switch_node` Node()가 있는지 확인하세요.
 
-`obstacles`와 `rviz`는 Gym fixture/UI 옵션이며 제어기 파라미터를 바꾸지 않습니다.
-
-## 제어기 선택
+## 컨트롤러 선택
 
 `controller:=`만 바꿉니다.
 
-| 이름 | 방식 | 현재 용도 |
+| 이름 | 방식 | 비고 |
 |---|---|---|
-| `pure_pursuit` | 속도 비례 lookahead + 조향률 제한 PP | 우선 기준선 |
-| `unicorn_l1` | HMCL-UNIST adaptive L1/PP | 비교 |
-| `forza_map` | ForzaETH MAP pursuit | 7 m/s LUT 범위 내 비교 |
-| `mpc` | 선형 bicycle MPC | 비교 |
-| `mpcc` | nonlinear MPCC | 실험 |
+| `pure_pursuit` | 속도 비례 lookahead + 곡률 기반 감속 | **기본, 가장 검증됨** |
+| `unicorn_l1` | HMCL-UNIST adaptive L1/PP | 곡률 기반 lookahead 상한 추가 패치 적용됨 |
+| `forza_map` | ForzaETH MAP pursuit | 7 m/s LUT 범위 내 |
+| `mpc` / `mpcc` | 선형/nonlinear MPC | 실험적, 검증 부족 |
 
-기본 PP도 공통 `/planning/path`, `/planning/speed_limit`,
-`/planning/avoidance_active`, `/safety/emergency_stop`을 사용합니다. UNICORN L1과
-Forza MAP은 MPC가 아닙니다.
+## 트랙 추가 (신규 매핑)
 
-## 주행 전 확인
+1. slam_toolbox로 매핑 → `maps/<name>.pgm`, `.yaml`
+2. 센터라인 생성: `python3 scripts/generate_centerline.py --map-yaml ... --output waypoints/<name>_centerline.csv`
+3. `scripts/generate_racetrack_bounds.py` + Raceline-Optimization(min-curvature) +
+   `scripts/global_smooth_raceline.py`로 최적화된 raceline 생성 (벽 클리어런스 +
+   곡률/조향각 한계 자동 검증)
+4. `f1tenth_bringup/config/tracks.yaml`에 항목 추가
 
-```bash
-ros2 lifecycle get /map_server
-ros2 lifecycle get /amcl
-timeout 5 ros2 topic hz /scan
-timeout 5 ros2 topic hz /odom
-timeout 5 ros2 topic hz /planning/path
-ros2 run tf2_ros tf2_echo map base_link
-```
+## 알려진 이슈 / 주의사항
 
-- map server와 AMCL: `active [3]`
-- `/scan`: 약 40 Hz, `/odom`: 약 50 Hz
-- Scan/지도 정렬 정상
-- 시작 전 지속적인 `AEB_STOP`, scan timeout, TF 오류 없음
-
-## 종료와 재실행
-
-자율주행 터미널에서 `Ctrl+C`를 한 번 누릅니다. `run_autonomy.sh`가 자신이 만든
-process group만 종료하고 다음 실행 전에 남은 autonomy 자식 프로세스를 정리합니다.
-하드웨어 bringup은 별도 터미널이므로 유지됩니다.
-
-## Sim-to-real 검증 기준
-
-소스 파일 해시, map/raceline 해시, 차량 형상, AMCL 파일과 launch 인자가 같아야
-합니다. 그 뒤 동일 controller/speed로 bag을 기록해 다음을 비교합니다.
-
-- lap time, 평균/최대 cross-track error
-- 실제 속도와 명령 속도
-- 조향 saturation/진동
-- AEB 횟수와 원인
-- AMCL pose jump와 TF/scan 지연
-
-마찰계수, 조향 지연, 가속 한계, odometry/AMCL 오차는 실차 bag으로 측정해 Gym에
-보정해야 합니다. 따라서 같은 소스는 달성 가능하지만, 측정 없이 동일 동역학을
-보장할 수는 없습니다.
-
-현재 기준선 결과는 `track03 + pure_pursuit`에서 장애물 없이 2랩 완주,
-정적 장애물 2개를 매 랩 재배치한 조건에서 3랩 완주입니다. 411 m 고속 시험로의
-10 m/s 요청에서는 제어 명령이 9.97 m/s까지 도달했지만 AMCL 오차가 누적됐으므로,
-이는 실차 10 m/s 승인 결과가 아니라 고속 localization 개선이 필요하다는 근거입니다.
+- **VESC 속도 상한**: `vesc.yaml`의 `speed_max`가 예전엔 23250(≈5.57 m/s)로
+  캡되어 있었음 → 20 m/s(83468)로 상향 완료. `speed:=` 값이 실제로 반영 안
+  되는 것 같으면 이 값부터 확인.
+- **install/ 심볼릭 링크**: `colcon build --symlink-install` 이후 새로 추가된
+  파일(raceline csv 등)은 자동으로 install/에 링크되지 않음 — 수동으로
+  `cp src/... install/.../share/...`까지 해야 반영됨.
+- **DDS 공유메모리 잔여물**: 세션을 여러 번 강제 종료하면 `/dev/shm/fastrtps_*`
+  파일이 쌓여서 `RTPS_TRANSPORT_SHM Error`나 AMCL 타임스탬프 오류가 날 수
+  있음 → `docker restart f1tenth` + `rm -f /dev/shm/fastrtps_*`로 정리.
+- **`max_heading_error`/`max_path_distance` 등 params.yaml 값**: 파일 기반
+  파라미터가 런타임에 반영 안 되는 문제가 있어(원인 불명), 급한 경우
+  `control.launch.py`의 인라인 파라미터 dict로 직접 오버라이드하는 편이
+  확실함.
 
 ## 출처
 
@@ -174,3 +174,4 @@ process group만 종료하고 다음 실행 전에 남은 autonomy 자식 프로
 - [Nav2 Regulated Pure Pursuit](https://arxiv.org/abs/2305.20026)
 - [HMCL-UNIST UNICORN Racing Stack](https://github.com/HMCL-UNIST/unicorn-racing-stack)
 - [ForzaETH Race Stack](https://github.com/ForzaETH/race_stack)
+- [TUM/CL2-UWaterloo Global Racetrajectory Optimization](https://github.com/CL2-UWaterloo/f1tenth_ws) (raceline 최적화)

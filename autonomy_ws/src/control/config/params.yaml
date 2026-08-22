@@ -8,6 +8,8 @@ pure_pursuit_node:
     odom_topic: "/ego_racecar/odom"
     path_topic: "/planning/path"
     emergency_stop_topic: "/safety/emergency_stop"
+    # Rule 3.3.1 manual on/off kill switch, independent of AEB.
+    kill_switch_topic: "/safety/kill_switch"
     avoidance_active_topic: "/planning/avoidance_active"
     speed_limit_topic: "/planning/speed_limit"
 
@@ -25,7 +27,7 @@ pure_pursuit_node:
     maximum_preview_heading: 0.70
     max_steering_angle: 0.4189
     max_path_distance: 1.00
-    max_heading_error: 1.0472  # 60 deg
+    max_heading_error: 1.3090  # 75 deg (was 60)
     search_back_points: 8
     search_forward_points: 30
 
