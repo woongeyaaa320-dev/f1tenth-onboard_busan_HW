@@ -1,7 +1,8 @@
 # F1TENTH 온보드 — race_v2
 
-ROS 2 Humble 기반 실차 배포 브랜치입니다. 6개 터미널로 하드웨어/
-localization/시각화/자율주행을 나눠서 띄우는 방식을 기준으로 합니다.
+ROS 2 Humble 기반 실차 배포 브랜치입니다. 하드웨어/시각화/자율주행,
+3개 터미널로 나눠서 띄우는 방식을 기준으로 합니다. map server/AMCL은
+`run_autonomy.sh`가 자동으로 켭니다 (별도 터미널 불필요).
 
 ## 접속 (터미널마다 반복)
 
@@ -25,16 +26,26 @@ colcon build --symlink-install --packages-select \
 source install/setup.bash
 ```
 
-## 실차 실행 — 터미널 6개
+## 세션 시작 전 초기화 (매번)
 
-각 터미널마다 로봇에 접속:
+이전 세션이 비정상 종료됐으면 프로세스가 남아 `/map_server`, `/amcl`이
+중복으로 뜨고 충돌합니다. 실행 전 한 번:
+
+```bash
+docker restart f1tenth
+docker exec -it f1tenth bash
+rm -f /dev/shm/fastrtps_*
+ros2 daemon stop && ros2 daemon start
+```
+
+## 실차 실행 — 터미널 3개
+
+각 터미널마다 로봇에 접속 (컨테이너가 꺼져 있으면 먼저 `docker start f1tenth`):
 
 ```bash
 ssh jeonbotdae@192.168.1.7
 docker exec -it f1tenth bash
 ```
-
-(컨테이너가 꺼져 있으면 먼저 `docker start f1tenth`)
 
 컨테이너 안 공통 환경 (**모든 터미널에서 필수** — 특히 `ROS_DOMAIN_ID`
 빠뜨리면 노드끼리 서로 안 보입니다):
@@ -59,41 +70,7 @@ ros2 launch f1tenth_stack bringup_launch.py
 ps aux | grep bringup_launch | grep -v grep
 ```
 
-### 터미널 2 — Map Server
-
-```bash
-ros2 run nav2_map_server map_server --ros-args \
-  -r __node:=map_server \
-  -p yaml_filename:=/home/misys/shared_dir/maps/track04.yaml \
-  -p topic:=map -p frame_id:=map -p use_sim_time:=false
-```
-
-### 터미널 3 — AMCL
-
-```bash
-ros2 run nav2_amcl amcl --ros-args \
-  -r __node:=amcl \
-  --params-file /home/misys/shared_dir/config/amcl.yaml
-```
-
-### 터미널 4 — Lifecycle Activation
-
-Terminal 1~3이 다 뜬 뒤:
-
-```bash
-ros2 daemon stop && ros2 daemon start
-sleep 2
-
-ros2 lifecycle set /map_server configure
-ros2 lifecycle set /map_server activate
-ros2 lifecycle get /map_server   # active [3] 확인
-
-ros2 lifecycle set /amcl configure
-ros2 lifecycle set /amcl activate
-ros2 lifecycle get /amcl         # active [3] 확인
-```
-
-### 터미널 5 — RViz (노트북 호스트, SSH 아님)
+### 터미널 2 — RViz (노트북 호스트, SSH 아님)
 
 ```bash
 xhost +si:localuser:root
@@ -106,24 +83,27 @@ docker exec -it -e DISPLAY=$DISPLAY -e ROS_DOMAIN_ID=30 -e ROS_LOCALHOST_ONLY=0 
   '
 ```
 
-**2D Pose Estimate**로 실제 차량 위치/방향을 지정합니다 (Terminal 3의
-AMCL이 살아있어야 반영됨). LaserScan(빨간 점)이 지도 벽에 맞는지 확인.
+**2D Pose Estimate**로 실제 차량 위치/방향을 지정합니다 (터미널 3에서
+AMCL이 뜬 뒤). LaserScan(빨간 점)이 지도 벽에 맞는지 확인.
 
-### 터미널 6 — Autonomy
+### 터미널 3 — Autonomy (map server + AMCL 자동 포함)
 
 ```bash
 source /home/misys/shared_dir/autonomy_ws/install/setup.bash
 cd /home/misys/shared_dir
-./run_autonomy.sh mode:=real track:=track04 controller:=pure_pursuit \
-  speed:=10.0 maximum_speed:=20.0 localization:=false \
-  max_longitudinal_acceleration:=10.0 \
-  max_longitudinal_deceleration:=8.0
+./run_autonomy.sh mode:=real track:=track05 controller:=racing_v2_pp \
+  speed:=1.0 maximum_speed:=15.0
 ```
 
-`localization:=false` 필수 — 안 붙이면 Terminal 2/3과 내부 localization이
-중복으로 떠서 `/map_server`, `/amcl`이 2개씩 생기고 서로 충돌합니다.
+`mode:=real`이면 `localization`이 기본값 `true`라 map server/AMCL을
+자동으로 같이 띄웁니다 — 따로 lifecycle 명령 넣을 필요 없음(예전 방식은
+수동 map_server/AMCL 터미널과 중복 충돌 위험이 있어 제거함).
 
-로그에 `num waypoints: 452` 확인 (최적화된 track04 raceline).
+**속도는 1 m/s부터 단계적으로 올리고, `max_longitudinal_deceleration:=`
+오버라이드는 넣지 마세요** — `racing_v2_pp` 기본값(3.04)이 그립테스트
+실측치라 오버라이드하면 코너 진입시 감속이 오히려 급해집니다.
+
+로그에 `num waypoints: 228` 확인 (track05 raceline).
 
 ## 시작/정지 · 킬스위치
 
@@ -150,7 +130,7 @@ launch에 안 붙은 것이니 `control/launch/control.launch.py`의 해당 컨�
 
 **터미널 1 — Bringup**
 ```bash
-ssh jeonbotdae@172.20.10.10
+ssh jeonbotdae@192.168.1.7
 docker exec -it f1tenth bash
 export ROS_DOMAIN_ID=30
 source /opt/ros/humble/setup.bash
@@ -160,7 +140,7 @@ ros2 launch f1tenth_stack bringup_launch.py
 
 **터미널 2 — 킬스위치**
 ```bash
-ssh jeonbotdae@172.20.10.10
+ssh jeonbotdae@192.168.1.7
 docker exec -it f1tenth bash
 export ROS_DOMAIN_ID=30
 source /opt/ros/humble/setup.bash
@@ -170,7 +150,7 @@ ros2 run control kill_switch_node --ros-args -p kill_switch_button:=6
 
 **터미널 3 — 확인 후 데모 실행**
 ```bash
-ssh jeonbotdae@172.20.10.10
+ssh jeonbotdae@192.168.1.7
 docker exec -it f1tenth bash
 export ROS_DOMAIN_ID=30
 source /opt/ros/humble/setup.bash
@@ -200,7 +180,7 @@ ros2 run control kill_switch_demo_node --ros-args \
 |---|---|---|
 | `pure_pursuit` (별칭 `racing_pp`) | 속도 비례 lookahead + 곡률 기반 감속 | **기본, 가장 검증됨** |
 | `racing_v1_pp` | racing_pp 2026-08-23 고정 스냅샷 | 이후 수정 안 함, 항상 되돌아갈 수 있는 기준점 |
-| `racing_v2_pp` | racing_v1_pp에서 계속 튜닝 중 | 그립테스트 실측 반영(`max_lateral_acceleration=4.43`, accel=1.8, decel=3.04), 회피 오탐지 완화 |
+| `racing_v2_pp` | racing_v1_pp에서 계속 튜닝 중 | 그립테스트 실측 반영(`max_lateral_acceleration=4.43`, accel=1.8, decel=3.04), 코너 진입 감속 완화(`speed_limit_preview_margin=1.70`), 직선 속도 상한 확장(`maximum_planning_speed=15.0`), 회피 오탐지 완화 |
 | `unicorn_l1` | HMCL-UNIST adaptive L1/PP | 곡률 기반 lookahead 상한 추가 패치 적용됨 |
 | `woong_pp` | unicorn_l1 + 장애물회피 안정화 포크 | woongeyaaa320-dev/f1tenth-obstacle-tuning 이식, **시뮬 1.5m/s에서만 검증됨** — 저속부터 테스트 |
 | `forza_map` | ForzaETH MAP pursuit | 7 m/s LUT 범위 내 |
