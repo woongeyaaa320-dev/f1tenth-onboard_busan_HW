@@ -37,7 +37,13 @@ local_obstacle_planner_node:
     # tolerance.  A 0.12 m baseline therefore gives an effective nominal gate
     # near 0.19 m without hiding a compact obstacle close to a mapped wall.
     # The percentile still expands it automatically when registration worsens.
-    map_endpoint_clearance: 0.12
+    # 0.12 was tuned tight enough that AMCL jitter + real wall roughness on
+    # a freshly live-mapped track (track05) could read a mapped wall as an
+    # "unmapped obstacle", triggering avoidance_active (and its
+    # maximum_planning_speed cap below) with nothing actually there.
+    # Loosened for race_v2's "faster and more stably avoiding" goal --
+    # still tight enough to catch a real object near a wall.
+    map_endpoint_clearance: 0.20
     map_registration_percentile: 60.0
     map_registration_margin: 0.04
     map_registration_max_extra: 0.25
@@ -46,7 +52,11 @@ local_obstacle_planner_node:
     cluster_max_diameter: 0.55
     path_obstacle_corridor: 0.55
     obstacle_memory_seconds: 0.5
-    obstacle_confirmation_frames: 3
+    # Raised 3->4: one more independent scan before committing to
+    # avoidance, cheap insurance against a single noisy frame given the
+    # tighter map_endpoint_clearance change above pulls in the other
+    # direction (more sensitive to real obstacles).
+    obstacle_confirmation_frames: 4
     obstacle_match_distance: 0.35
     # 0.20 x 0.12 m obstacle footprint의 외접원에 가까운 기본 반경.
     obstacle_default_radius: 0.11
@@ -102,9 +112,19 @@ local_obstacle_planner_node:
     # The controller takes this topic as a limit, not as a fixed avoidance
     # speed. Straights remain fast while curvature sets a physically meaningful
     # limit through a_y = v^2*kappa.
-    maximum_planning_speed: 5.5
+    # 5.5 predates the 2026-08-23 grip test (measured
+    # max_lateral_acceleration=4.43 m/s^2, i.e. this car corners faster
+    # than that old guess assumed). This is a flat ceiling, not
+    # curvature-based, so it only matters on the straighter parts of an
+    # avoidance manoeuvre -- curvature still limits corner speed
+    # separately via candidate_curvature()/max_lateral_acceleration below.
+    maximum_planning_speed: 7.0
     minimum_avoidance_speed: 1.00
-    max_lateral_acceleration: 1.50
+    # Raised from 1.50 toward (but below) the measured grip limit of
+    # 4.43 m/s^2: an avoidance swerve is a tighter, more sudden turn than
+    # the main raceline, so keep some margin instead of using the same
+    # ceiling as the primary controller's max_lateral_acceleration.
+    max_lateral_acceleration: 3.00
     candidate_curvature_weight: 0.35
     candidate_clearance_weight: 0.10
     curvature_percentile: 85.0

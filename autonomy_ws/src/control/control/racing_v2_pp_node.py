@@ -1,6 +1,11 @@
 """racing_v2_pp: active-tuning branch forked from racing_v1_pp_node.py
 (2026-08-23). Edit this file for further changes; racing_v1_pp_node.py stays
 frozen as a known-good reference/fallback.
+
+Cornering/accel/decel limits below are set from the 2026-08-23 surface
+grip test (scripts/surface_grip_test.py + analyze_grip_bag.py), not
+guessed. See scripts/README.md for how to re-measure if the tires or
+surface change.
 """
 
 import math
@@ -68,18 +73,23 @@ class RacingV2PpNode(Node):
         # corner speed, while the longitudinal limits create a braking-aware
         # speed envelope before the corner.
         # v1 ran conservative at 2.6 while base_link/AMCL/kill-switch bugs
-        # were still being found and fixed. Those are now confirmed working
-        # on real hardware (kill switch verified live, AMCL doing real scan
-        # matching, reactive lateral_error_speed_gain below still catches
-        # wide-running mid-corner). Raised back to the original 4.0
-        # (ForzaETH-derived baseline) as the next step to test for real
-        # cornering speed -- track04's straights are too short (~2.5m) for
-        # straight-line accel to matter much; this is the dominant lever for
-        # actual lap speed on this track. If this still runs wide in testing,
-        # step back down rather than raising further blind.
-        self.declare_parameter('max_lateral_acceleration', 4.0)
-        self.declare_parameter('max_longitudinal_acceleration', 2.0)
-        self.declare_parameter('max_longitudinal_deceleration', 4.0)
+        # were still being found and fixed; then raised blind to 4.0 to
+        # start probing real cornering speed. 2026-08-23's surface_grip_test
+        # (scripts/surface_grip_test.py + analyze_grip_bag.py) measured the
+        # real slip onset directly: yaw-rate ratio broke at a_y=5.54 m/s^2,
+        # so max_lateral_acceleration=4.43 (80% of that) is the actual
+        # measured-safe ceiling for this tire/surface, not another guess.
+        self.declare_parameter('max_lateral_acceleration', 4.43)
+        # Same grip test's clean step-up transitions (0->2.4 m/s) measured
+        # 3.40 m/s^2 falling to 0.90 m/s^2 as commanded speed rose toward
+        # 3.6 m/s -- 2.0 sits inside that measured range rather than above
+        # it like the old unmeasured default risked.
+        self.declare_parameter('max_longitudinal_acceleration', 1.8)
+        # Same grip test's braking events measured median 3.79 m/s^2, max
+        # 4.44 -- 3.04 (80% of the median) replaces the old unmeasured 4.0,
+        # which the curvature preview below was trusting to brake harder
+        # than the car actually can.
+        self.declare_parameter('max_longitudinal_deceleration', 3.04)
         # curvature_speed_limit()'s braking preview computes the exact
         # minimum distance needed at max_longitudinal_deceleration -- zero
         # margin for control-loop discretization, actuator lag, or the

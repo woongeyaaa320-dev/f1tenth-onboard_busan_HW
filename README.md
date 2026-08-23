@@ -1,4 +1,4 @@
-# F1TENTH 온보드 — race_v1
+# F1TENTH 온보드 — race_v2
 
 ROS 2 Humble 기반 실차 배포 브랜치입니다. 6개 터미널로 하드웨어/
 localization/시각화/자율주행을 나눠서 띄우는 방식을 기준으로 합니다.
@@ -200,7 +200,7 @@ ros2 run control kill_switch_demo_node --ros-args \
 |---|---|---|
 | `pure_pursuit` (별칭 `racing_pp`) | 속도 비례 lookahead + 곡률 기반 감속 | **기본, 가장 검증됨** |
 | `racing_v1_pp` | racing_pp 2026-08-23 고정 스냅샷 | 이후 수정 안 함, 항상 되돌아갈 수 있는 기준점 |
-| `racing_v2_pp` | racing_v1_pp에서 계속 튜닝 중 | `max_lateral_acceleration` 2.6→4.0 (최고속 시도), 앞으로 수정은 여기서 |
+| `racing_v2_pp` | racing_v1_pp에서 계속 튜닝 중 | 그립테스트 실측 반영(`max_lateral_acceleration=4.43`, accel=1.8, decel=3.04), 회피 오탐지 완화 |
 | `unicorn_l1` | HMCL-UNIST adaptive L1/PP | 곡률 기반 lookahead 상한 추가 패치 적용됨 |
 | `woong_pp` | unicorn_l1 + 장애물회피 안정화 포크 | woongeyaaa320-dev/f1tenth-obstacle-tuning 이식, **시뮬 1.5m/s에서만 검증됨** — 저속부터 테스트 |
 | `forza_map` | ForzaETH MAP pursuit | 7 m/s LUT 범위 내 |
