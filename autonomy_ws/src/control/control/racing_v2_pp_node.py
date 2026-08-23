@@ -1,3 +1,8 @@
+"""racing_v2_pp: active-tuning branch forked from racing_v1_pp_node.py
+(2026-08-23). Edit this file for further changes; racing_v1_pp_node.py stays
+frozen as a known-good reference/fallback.
+"""
+
 import math
 
 import rclpy
@@ -14,9 +19,9 @@ from std_srvs.srv import SetBool
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
-class PurePursuitNode(Node):
+class RacingV2PpNode(Node):
     def __init__(self):
-        super().__init__('pure_pursuit_node')
+        super().__init__('racing_v2_pp_node')
 
         self.declare_parameter('drive_mode', 'sim')
         self.declare_parameter('enabled', False)
@@ -62,12 +67,17 @@ class PurePursuitNode(Node):
         # vehicle limits, not map-specific gains: path curvature determines
         # corner speed, while the longitudinal limits create a braking-aware
         # speed envelope before the corner.
-        # Lowered from an earlier 4.0: that value assumed grip this track's
-        # actual (untested, likely lower-friction) surface has not verified.
-        # Tune upward empirically once real max lateral acceleration is
-        # measured; better to be conservative first than find the limit via
-        # a wall.
-        self.declare_parameter('max_lateral_acceleration', 2.6)
+        # v1 ran conservative at 2.6 while base_link/AMCL/kill-switch bugs
+        # were still being found and fixed. Those are now confirmed working
+        # on real hardware (kill switch verified live, AMCL doing real scan
+        # matching, reactive lateral_error_speed_gain below still catches
+        # wide-running mid-corner). Raised back to the original 4.0
+        # (ForzaETH-derived baseline) as the next step to test for real
+        # cornering speed -- track04's straights are too short (~2.5m) for
+        # straight-line accel to matter much; this is the dominant lever for
+        # actual lap speed on this track. If this still runs wide in testing,
+        # step back down rather than raising further blind.
+        self.declare_parameter('max_lateral_acceleration', 4.0)
         self.declare_parameter('max_longitudinal_acceleration', 2.0)
         self.declare_parameter('max_longitudinal_deceleration', 4.0)
         # curvature_speed_limit()'s braking preview computes the exact
@@ -779,7 +789,7 @@ class PurePursuitNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PurePursuitNode()
+    node = RacingV2PpNode()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException, RCLError):

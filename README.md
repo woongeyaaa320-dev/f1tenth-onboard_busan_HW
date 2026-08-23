@@ -138,8 +138,11 @@ launch에 안 붙은 것이니 `control/launch/control.launch.py`의 해당 컨�
 
 | 이름 | 방식 | 비고 |
 |---|---|---|
-| `pure_pursuit` | 속도 비례 lookahead + 곡률 기반 감속 | **기본, 가장 검증됨** |
+| `pure_pursuit` (별칭 `racing_pp`) | 속도 비례 lookahead + 곡률 기반 감속 | **기본, 가장 검증됨** |
+| `racing_v1_pp` | racing_pp 2026-08-23 고정 스냅샷 | 이후 수정 안 함, 항상 되돌아갈 수 있는 기준점 |
+| `racing_v2_pp` | racing_v1_pp에서 계속 튜닝 중 | `max_lateral_acceleration` 2.6→4.0 (최고속 시도), 앞으로 수정은 여기서 |
 | `unicorn_l1` | HMCL-UNIST adaptive L1/PP | 곡률 기반 lookahead 상한 추가 패치 적용됨 |
+| `woong_pp` | unicorn_l1 + 장애물회피 안정화 포크 | woongeyaaa320-dev/f1tenth-obstacle-tuning 이식, **시뮬 1.5m/s에서만 검증됨** — 저속부터 테스트 |
 | `forza_map` | ForzaETH MAP pursuit | 7 m/s LUT 범위 내 |
 | `mpc` / `mpcc` | 선형/nonlinear MPC | 실험적, 검증 부족 |
 
