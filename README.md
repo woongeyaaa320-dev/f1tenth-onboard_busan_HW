@@ -132,6 +132,58 @@ ros2 topic echo /safety/kill_switch
 launch에 안 붙은 것이니 `control/launch/control.launch.py`의 해당 컨트롤러
 분기에 `kill_switch_node` Node()가 있는지 확인하세요.
 
+## 킬스위치 단독 시연 (매핑 안 된 환경)
+
+지도/위치추정/경로 전혀 필요 없음 — 고정 속도로 직진하다가 킬스위치에
+반응하는 `kill_switch_demo_node` 하나만 사용합니다. Bringup에서
+`joy_teleop`은 조이스틱을 실제로 조작할 때만 `/teleop`에 publish하므로,
+시연 중 킬스위치 버튼(L2) 외의 스틱/버튼은 건드리지 마세요 — 건드리면
+그 순간 mux 우선순위상 teleop이 앞서서 데모 노드의 `/auto` 명령을 덮습니다.
+
+**터미널 1 — Bringup**
+```bash
+ssh jeonbotdae@172.20.10.10
+docker exec -it f1tenth bash
+export ROS_DOMAIN_ID=30
+source /opt/ros/humble/setup.bash
+source /home/misys/f1tenth_ws/install/setup.bash
+ros2 launch f1tenth_stack bringup_launch.py
+```
+
+**터미널 2 — 킬스위치**
+```bash
+ssh jeonbotdae@172.20.10.10
+docker exec -it f1tenth bash
+export ROS_DOMAIN_ID=30
+source /opt/ros/humble/setup.bash
+source /home/misys/shared_dir/autonomy_ws/install/setup.bash
+ros2 run control kill_switch_node --ros-args -p kill_switch_button:=6
+```
+
+**터미널 3 — 확인 후 데모 실행**
+```bash
+ssh jeonbotdae@172.20.10.10
+docker exec -it f1tenth bash
+export ROS_DOMAIN_ID=30
+source /opt/ros/humble/setup.bash
+source /home/misys/shared_dir/autonomy_ws/install/setup.bash
+```
+먼저 킬스위치 확인 (`false`→L2→`true`):
+```bash
+ros2 topic echo /safety/kill_switch
+```
+확인되면 데모 실행 — `start_delay`초 후 자동 직진 시작, `max_duration`초
+후 무조건 자동 정지(안전장치, 킬스위치와 별개):
+```bash
+ros2 run control kill_switch_demo_node --ros-args \
+  -p speed:=1.0 \
+  -p start_delay:=3.0 \
+  -p max_duration:=10.0
+```
+차 움직이기 시작하면 원하는 타이밍에 L2로 정지 시연 → 다시 눌러서
+재개되는 것도 보여주면 진짜 토글임을 증명 가능 → 끝나면 Ctrl+C.
+앞에 최소 3~4m 공간 확보하고 진행.
+
 ## 컨트롤러 선택
 
 `controller:=`만 바꿉니다.
