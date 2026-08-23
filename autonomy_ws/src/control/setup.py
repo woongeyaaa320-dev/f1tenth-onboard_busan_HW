@@ -48,6 +48,7 @@ setup(
             'woong_pp_node = control.woong_pp_node:main',
             'forza_map_node = control.forza_map_node:main',
             'kill_switch_node = control.kill_switch_node:main',
+            'kill_switch_demo_node = control.kill_switch_demo_node:main',
         ],
     },
 )
