@@ -112,13 +112,12 @@ local_obstacle_planner_node:
     # The controller takes this topic as a limit, not as a fixed avoidance
     # speed. Straights remain fast while curvature sets a physically meaningful
     # limit through a_y = v^2*kappa.
-    # 5.5 predates the 2026-08-23 grip test (measured
-    # max_lateral_acceleration=4.43 m/s^2, i.e. this car corners faster
-    # than that old guess assumed). This is a flat ceiling, not
-    # curvature-based, so it only matters on the straighter parts of an
-    # avoidance manoeuvre -- curvature still limits corner speed
-    # separately via candidate_curvature()/max_lateral_acceleration below.
-    maximum_planning_speed: 7.0
+    # This is a flat ceiling, not a grip parameter -- curvature still limits
+    # corner speed separately via candidate_curvature()/
+    # max_lateral_acceleration below, which stays grip-test-measured. Raised
+    # to effectively stop binding on straights (real cap becomes cornering
+    # physics + measured accel + available straight length instead).
+    maximum_planning_speed: 15.0
     minimum_avoidance_speed: 1.00
     # Raised from 1.50 toward (but below) the measured grip limit of
     # 4.43 m/s^2: an avoidance swerve is a tighter, more sudden turn than

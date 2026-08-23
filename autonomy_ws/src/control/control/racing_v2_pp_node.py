@@ -90,6 +90,14 @@ class RacingV2PpNode(Node):
         # which the curvature preview below was trusting to brake harder
         # than the car actually can.
         self.declare_parameter('max_longitudinal_deceleration', 3.04)
+        # IMPORTANT: do not override this via max_longitudinal_deceleration:=
+        # with an unmeasured value (e.g. the 8.0 used in earlier real-car
+        # runs) -- that made curvature_speed_limit()'s braking preview below
+        # believe it could stop harder than the car physically can, so it
+        # started braking too late and had to drop speed in what felt like a
+        # single hard step at corner entry (reported: 5->2 m/s "step" on
+        # track05). 3.04 is measured; trust it.
+        #
         # curvature_speed_limit()'s braking preview computes the exact
         # minimum distance needed at max_longitudinal_deceleration -- zero
         # margin for control-loop discretization, actuator lag, or the
@@ -98,7 +106,13 @@ class RacingV2PpNode(Node):
         # then get discovered too late to fully brake for, so the car enters
         # the corner over the curvature-safe speed and runs wide into the
         # outer wall. Scaling the preview window out start braking earlier.
-        self.declare_parameter('speed_limit_preview_margin', 1.35)
+        # Raised 1.35->1.7: track05-class tracks are short/tight enough that
+        # corner entries follow straights almost immediately: more lead time
+        # here is what actually turns a hard 1-second drop into a longer,
+        # gentler one, since the physical deceleration rate itself (3.04) is
+        # already the measured real limit and can't be raised further
+        # without new grip data.
+        self.declare_parameter('speed_limit_preview_margin', 1.70)
         self.declare_parameter('curvature_sample_distance', 0.25)
         self.declare_parameter('curvature_floor', 0.02)
         self.declare_parameter('use_dynamic_speed_limit', True)
