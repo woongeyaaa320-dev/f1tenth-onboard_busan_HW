@@ -42,6 +42,7 @@ setup(
             'pure_pursuit_node = control.pure_pursuit_node:main',
             'racing_v1_pp_node = control.racing_v1_pp_node:main',
             'racing_v2_pp_node = control.racing_v2_pp_node:main',
+            'racing_v3_pp_node = control.racing_v3_pp_node:main',
             'linear_mpc_node = control.linear_mpc_node:main',
             'nonlinear_mpcc_node = control.nonlinear_mpcc_node:main',
             'unicorn_l1_node = control.unicorn_l1_node:main',

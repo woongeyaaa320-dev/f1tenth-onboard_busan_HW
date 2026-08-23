@@ -66,6 +66,7 @@ def _launch_setup(context):
         'racing_pp': 'pure_pursuit_node',
         'racing_v1_pp': 'racing_v1_pp_node',
         'racing_v2_pp': 'racing_v2_pp_node',
+        'racing_v3_pp': 'racing_v3_pp_node',
     }
     if controller in pure_pursuit_family:
         pp_executable = pure_pursuit_family[controller]
@@ -440,7 +441,8 @@ def _launch_setup(context):
     if controller not in ('mpc', 'mpcc'):
         raise RuntimeError(
             f'Unknown controller {controller!r}; use none, pure_pursuit, '
-            'unicorn_l1, woong_pp, racing_v1_pp, racing_v2_pp, forza_map, mpc, or mpcc.')
+            'unicorn_l1, woong_pp, racing_v1_pp, racing_v2_pp, racing_v3_pp, '
+            'forza_map, mpc, or mpcc.')
 
     config_path = LaunchConfiguration('mpc_params_file').perform(context)
     profile_name = LaunchConfiguration('mpc_profile').perform(context)
@@ -534,7 +536,7 @@ def generate_launch_description():
             default_value='pure_pursuit',
             description=(
                 'none, pure_pursuit, unicorn_l1, woong_pp, racing_v1_pp, '
-                'racing_v2_pp, forza_map, '
+                'racing_v2_pp, racing_v3_pp, forza_map, '
                 'mpc, or mpcc'),
         ),
         DeclareLaunchArgument(

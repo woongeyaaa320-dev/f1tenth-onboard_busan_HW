@@ -688,13 +688,25 @@ class LocalObstaclePlannerNode(Node):
         planning_speed = min(
             self.maximum_planning_speed,
             max(self.speed, self.minimum_avoidance_speed))
+        # An obstacle only enters active_obstacles() after
+        # obstacle_confirmation_frames independent scans (see
+        # active_obstacles()/scan_callback). That is a fixed wall-clock
+        # delay during which the vehicle keeps closing the distance before
+        # any avoidance geometry can even start -- neither horizon term
+        # below otherwise knows this delay exists, so at high planning_speed
+        # a "confirmed" detection can already be past the point a smooth
+        # swerve needed to begin. Budget that distance explicitly.
+        detection_margin = (
+            planning_speed
+            * self.obstacle_confirmation_frames
+            * self.scan_process_period)
         stopping_horizon = speed_dependent_horizon(
             planning_speed,
             self.planning_reaction_time,
             self.planning_deceleration,
             self.planning_distance_margin,
             self.obstacle_lookahead,
-            self.maximum_planning_horizon)
+            self.maximum_planning_horizon) + detection_margin
         # Detection must precede the start of the smooth lateral transition.
         # A stopping-distance-only horizon can activate an obstacle after the
         # vehicle has already passed that transition start, forcing the
@@ -706,7 +718,8 @@ class LocalObstaclePlannerNode(Node):
         transition_horizon = (
             longest_transition
             + planning_speed * self.planning_reaction_time
-            + self.planning_distance_margin)
+            + self.planning_distance_margin
+            + detection_margin)
         return min(
             self.maximum_planning_horizon,
             max(stopping_horizon, transition_horizon))

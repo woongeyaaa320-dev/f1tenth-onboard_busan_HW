@@ -21,10 +21,15 @@ local_obstacle_planner_node:
     global_frame_id: "map"
     odom_frame_id: "odom"
     base_frame_id: "ego_racecar/base_link"
-    # /scan is 40 Hz and /odom is 50 Hz on the current car. Planning at
-    # 20 Hz halves avoidance latency without processing every laser packet.
-    planning_rate: 20.0
-    scan_process_rate: 20.0
+    # /scan is 40 Hz and /odom is 50 Hz on the current car. race_v3: process
+    # every laser packet instead of halving to 20 Hz -- obstacle_confirmation_frames
+    # below is a fixed *count* of independent scans, so processing at the
+    # LiDAR's native rate directly halves the wall-clock detection latency
+    # for the same confirmation count (200ms -> 100ms at frames=4). This was
+    # the dominant cause of "recognizes the obstacle only after hitting it"
+    # at race_v2's higher speeds.
+    planning_rate: 40.0
+    scan_process_rate: 40.0
     # Publish changed avoidance paths immediately. Identical long paths only
     # need a heartbeat for controller freshness; RViz diagnostics are slower.
     path_heartbeat_rate: 2.0
@@ -103,7 +108,14 @@ local_obstacle_planner_node:
     # footprint collision and no-feasible-path stops remain unchanged.
     aeb_corridor_half_width: 0.17
     aeb_reaction_time: 0.08
-    aeb_max_deceleration: 6.0
+    # race_v3: 6.0 was never measured and is far above what the car can
+    # actually do (2026-08-23 grip test: median braking ~3.79 m/s^2, 80%
+    # margin 3.04). critical_distance = aeb_min_distance + v*reaction_time +
+    # v^2/(2*aeb_max_deceleration) used 6.0 to compute how much stopping
+    # distance it needed, so it was requesting ~40% less distance than the
+    # real car needs at speed -- AEB was triggering too late to actually
+    # stop in time. Matches the same grip-test value racing_v2_pp uses.
+    aeb_max_deceleration: 3.04
     aeb_min_distance: 0.10
     aeb_critical_reaction_time: 0.03
     aeb_confirmation_frames: 3

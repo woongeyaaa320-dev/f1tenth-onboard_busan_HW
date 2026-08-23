@@ -1,4 +1,4 @@
-# F1TENTH 온보드 — race_v2
+# F1TENTH 온보드 — race_v3
 
 ROS 2 Humble 기반 실차 배포 브랜치입니다. 6개 터미널로 하드웨어/
 localization/시각화/자율주행을 나눠서 띄우는 방식을 기준으로 합니다.
@@ -217,7 +217,8 @@ ros2 run control kill_switch_demo_node --ros-args \
 |---|---|---|
 | `pure_pursuit` (별칭 `racing_pp`) | 속도 비례 lookahead + 곡률 기반 감속 | **기본, 가장 검증됨** |
 | `racing_v1_pp` | racing_pp 2026-08-23 고정 스냅샷 | 이후 수정 안 함, 항상 되돌아갈 수 있는 기준점 |
-| `racing_v2_pp` | racing_v1_pp에서 계속 튜닝 중 | 그립테스트 실측 반영(`max_lateral_acceleration=4.43`, accel=1.8, decel=3.04), 코너 진입 감속 완화(`speed_limit_preview_margin=1.70`), 직선 속도 상한 확장(`maximum_planning_speed=15.0`), 회피 오탐지 완화 |
+| `racing_v2_pp` | racing_v1_pp에서 계속 튜닝 중 | 그립테스트 실측 반영(`max_lateral_acceleration=4.43`, accel=1.8, decel=3.04), 코너 진입 감속 완화(`speed_limit_preview_margin=1.70`), 직선 속도 상한 확장(`maximum_planning_speed=15.0`), 회피 오탐지 완화. **가장 최근 실차 검증됨** |
+| `racing_v3_pp` | racing_v2_pp 클론, 속도 설정 동일 | 장애물 인식 지연 개선: `scan_process_rate`/`planning_rate` 20→40Hz(라이다 40Hz 원속도), 확인 프레임 지연을 planning horizon에 반영, `aeb_max_deceleration` 6.0→3.04(그립테스트 실측, 예전엔 실제보다 훨씬 세게 설 수 있다고 가정해 AEB가 늦게 걸림). 시뮬 5회 랩 중 12회 성공 회피/AEB 1회/충돌 1회(장애물 순간이동 리스폰 직후, 회피 불가능한 극단 케이스). **실차 검증 전** |
 | `unicorn_l1` | HMCL-UNIST adaptive L1/PP | 곡률 기반 lookahead 상한 추가 패치 적용됨 |
 | `woong_pp` | unicorn_l1 + 장애물회피 안정화 포크 | woongeyaaa320-dev/f1tenth-obstacle-tuning 이식, **시뮬 1.5m/s에서만 검증됨** — 저속부터 테스트 |
 | `forza_map` | ForzaETH MAP pursuit | 7 m/s LUT 범위 내 |
