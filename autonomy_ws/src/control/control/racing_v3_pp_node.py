@@ -81,20 +81,30 @@ class RacingV3PpNode(Node):
         # were still being found and fixed; then raised blind to 4.0 to
         # start probing real cornering speed. 2026-08-23's surface_grip_test
         # (scripts/surface_grip_test.py + analyze_grip_bag.py) measured the
-        # real slip onset directly: yaw-rate ratio broke at a_y=5.54 m/s^2,
-        # so max_lateral_acceleration=4.43 (80% of that) is the actual
-        # measured-safe ceiling for this tire/surface, not another guess.
-        self.declare_parameter('max_lateral_acceleration', 4.43)
-        # Same grip test's clean step-up transitions (0->2.4 m/s) measured
-        # 3.40 m/s^2 falling to 0.90 m/s^2 as commanded speed rose toward
-        # 3.6 m/s -- 2.0 sits inside that measured range rather than above
-        # it like the old unmeasured default risked.
-        self.declare_parameter('max_longitudinal_acceleration', 1.8)
-        # Same grip test's braking events measured median 3.79 m/s^2, max
-        # 4.44 -- 3.04 (80% of the median) replaces the old unmeasured 4.0,
-        # which the curvature preview below was trusting to brake harder
-        # than the car actually can.
-        self.declare_parameter('max_longitudinal_deceleration', 3.04)
+        # real slip onset directly on the practice-track surface: yaw-rate
+        # ratio broke at a_y=5.54 m/s^2, giving 4.43 (80% margin).
+        # 2026-08-24's grip_test_busan bag re-measured this on the actual
+        # Busan/BEXCO competition venue surface (different friction from the
+        # practice track -- must be re-measured whenever tires or surface
+        # change): slip onset a_y=4.09 m/s^2 at cmd v=2.20 m/s, ratio held
+        # near baseline (~1.05-1.11) below that. 3.27 (80% margin) is lower
+        # than the practice-track number, so it's the tighter constraint --
+        # use it for anything actually run on the competition surface.
+        self.declare_parameter('max_lateral_acceleration', 3.27)
+        # Busan grip test's step-up events: n=40, median 1.19 m/s^2, max
+        # 2.10 (partly contaminated by deadman/teleop mixing in mid-test,
+        # so noisier than the lateral number above). 0.95 = 80% of median.
+        # Practice-track measurement was 1.8; use the lower, venue-specific
+        # number for the actual competition surface.
+        self.declare_parameter('max_longitudinal_acceleration', 0.95)
+        # Busan grip test's braking events: only n=2, median 6.50 m/s^2, max
+        # 9.60 -- small sample, lower confidence than the practice-track
+        # measurement (3.04, n larger). 5.20 = 80% of median. Notably
+        # *higher* than the practice-track number (this surface brakes
+        # harder, not less, unlike the other two dimensions), so this one
+        # actually loosens the old assumption rather than tightening it --
+        # worth a re-test with more braking events before fully trusting it.
+        self.declare_parameter('max_longitudinal_deceleration', 5.20)
         # IMPORTANT: do not override this via max_longitudinal_deceleration:=
         # with an unmeasured value (e.g. the 8.0 used in earlier real-car
         # runs) -- that made curvature_speed_limit()'s braking preview below
