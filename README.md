@@ -38,7 +38,7 @@ ssh -tt jeonbotdae@172.20.10.10 \
 ```
 컨테이너 안에서:
 ```bash
-rm -f /dev/shm/fastrtps_*
+rm -f /dev/shm/fastrtps_*   # Cyclone DDS로 바꾼 뒤로는 대부분 no-op이지만 무해해서 유지
 ros2 daemon stop && ros2 daemon start
 ```
 
@@ -56,9 +56,27 @@ ssh -tt jeonbotdae@172.20.10.10 \
 
 ```bash
 export ROS_DOMAIN_ID=30
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain Id="any">
+<General>
+<Interfaces><NetworkInterface name="wlP1p1s0"/></Interfaces>
+<AllowMulticast>spdp</AllowMulticast>
+<MaxMessageSize>1400B</MaxMessageSize>
+</General>
+<Internal><SocketReceiveBufferSize min="2MB"/></Internal>
+</Domain></CycloneDDS>'
 source /opt/ros/humble/setup.bash
 source /home/misys/f1tenth_ws/install/setup.bash
 ```
+
+Fast DDS 대신 WiFi 환경에 맞춘 Cyclone DDS로 바꾼 것입니다: `wlP1p1s0`은
+**이 차량**의 WiFi 인터페이스 이름(`ip -br addr`로 확인)이라 다른 차량엔
+그대로 못 씁니다. `SPDP`(초기 디스커버리)만 멀티캐스트 허용, 나머진
+유니캐스트, `MaxMessageSize`는 IP 단편화(패킷 유실에 특히 취약) 방지용
+1400B, `SocketReceiveBufferSize`는 라이다 등 버스트 트래픽 드롭 방지용
+최소 2MB. 컨테이너에 `ros-humble-rmw-cyclonedds-cpp`가 없으면 먼저
+`sudo apt install ros-humble-rmw-cyclonedds-cpp`. 노트북에서 RViz로
+붙일 때도 같은 RMW로 맞춰야 함 — Terminal 5 참고.
 
 ### 터미널 1 — 하드웨어 Bringup
 
@@ -110,16 +128,33 @@ ros2 lifecycle get /amcl         # active [3] 확인
 
 ### 터미널 5 — RViz (노트북 호스트, SSH 아님)
 
+차량이 Cyclone DDS로 바뀐 뒤로는 노트북도 같은 RMW로 맞춰야 서로 안정적으로
+보입니다. 먼저 이 노트북의 WiFi 인터페이스 이름을 확인하세요(차량의
+`wlP1p1s0`과는 다른, **이 노트북 자신의** 이름입니다):
+
+```bash
+ip -br addr   # UP 상태이고 IP가 있는 WiFi 인터페이스
+```
+
+아래 `<YOUR_WIFI_INTERFACE>`를 방금 확인한 이름으로 바꿔서 실행:
+
 ```bash
 xhost +si:localuser:root
-docker exec -it -e DISPLAY=$DISPLAY -e ROS_DOMAIN_ID=30 -e ROS_LOCALHOST_ONLY=0 \
+docker exec -it -e DISPLAY=$DISPLAY \
   f1tenth_gym_ros_humble-sim-1 \
   bash -lc '
+    export ROS_DOMAIN_ID=30
+    export ROS_LOCALHOST_ONLY=0
+    export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    export CYCLONEDDS_URI="<CycloneDDS><Domain Id=\"any\"><General><Interfaces><NetworkInterface name=\"<YOUR_WIFI_INTERFACE>\"/></Interfaces><AllowMulticast>spdp</AllowMulticast><MaxMessageSize>1400B</MaxMessageSize></General><Internal><SocketReceiveBufferSize min=\"2MB\"/></Internal></Domain></CycloneDDS>"
     source /opt/ros/humble/setup.bash
     source /sim_ws/install/setup.bash
     exec rviz2 -d /sim_ws/install/f1tenth_gym_ros/share/f1tenth_gym_ros/launch/gym_bridge.rviz
   '
 ```
+
+컨테이너에 `ros-humble-rmw-cyclonedds-cpp`가 없으면 먼저 컨테이너 안에서
+`sudo apt install ros-humble-rmw-cyclonedds-cpp`.
 
 **2D Pose Estimate**로 실제 차량 위치/방향을 지정합니다 (Terminal 3의
 AMCL이 살아있어야 반영됨). LaserScan(빨간 점)이 지도 벽에 맞는지 확인.
